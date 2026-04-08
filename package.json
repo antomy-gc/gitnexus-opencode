@@ -1,0 +1,35 @@
+{
+  "name": "gitnexus-opencode",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for GitNexus — automatic graph indexing, staleness detection, and subagent hints",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "gitnexus",
+    "code-graph",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antomy-gc/gitnexus-opencode"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "typescript": "^5.7.0"
+  }
+}
