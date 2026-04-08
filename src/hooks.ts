@@ -1,11 +1,11 @@
 import { execSync, spawn } from "child_process"
-import { existsSync, openSync } from "fs"
+import { closeSync, existsSync, openSync } from "fs"
 import { join } from "path"
 import { gitnexusCmd, type PluginConfig } from "./config.js"
 import { hasIndex, readMeta } from "./staleness.js"
 import { discoverRepos } from "./discovery.js"
 
-const GIT_MUTATION_RE = /git\s+(commit|merge|rebase|pull|cherry-pick|checkout|reset)/
+const GIT_MUTATION_RE = /git\s+(commit|merge|rebase|pull|cherry-pick|checkout|switch|reset)/
 
 const GRAPH_HINT = `
 [gitnexus] Code knowledge graph available. Use gitnexus_query/context/impact
@@ -23,8 +23,8 @@ Only spawn explore agents for: conventions, anti-patterns, CI/build.`
 
 const TASK_TOOL_NAMES = new Set(["task", "Task", "call_omo_agent"])
 
-function buildSubagentHint(cwd: string, scanDepth: number): string {
-  const repos = discoverRepos(cwd, scanDepth)
+function buildSubagentHint(cwd: string): string {
+  const repos = discoverRepos(cwd)
   const indexed = repos.filter((r) => r.hasIndex)
   if (indexed.length === 0) return ""
 
@@ -59,6 +59,7 @@ export function analyzeInBackground(
     detached: true,
     cwd: repoPath,
   })
+  closeSync(devNull)
   child.unref()
   if (onDone) child.on("close", onDone)
 }
@@ -69,7 +70,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
 
   function checkAndRefreshIfStale() {
     if (!config.autoRefreshStale) return
-    const repos = discoverRepos(cwd, config.scanDepth)
+    const repos = discoverRepos(cwd)
 
     for (const repo of repos) {
       if (!repo.hasIndex || refreshingRepos.has(repo.path)) continue
@@ -105,7 +106,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
   return {
     onToolExecuteAfter(
       input: { tool: string; args: Record<string, unknown> },
-      output: { result: string; args: Record<string, unknown> }
+      output: { output: string; args: Record<string, unknown> }
     ) {
       if (disabled()) return
 
@@ -114,15 +115,15 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
         if (!name) return
 
         if (name === "init-deep" || name === "init") {
-          output.result += INIT_PREREQUISITE
+          output.output += INIT_PREREQUISITE
           return
         }
 
         const anyIndexed =
           existsSync(join(cwd, ".gitnexus", "meta.json")) ||
-          discoverRepos(cwd, 1).some((r) => r.hasIndex)
+          discoverRepos(cwd).some((r) => r.hasIndex)
         if (anyIndexed) {
-          output.result += GRAPH_HINT
+          output.output += GRAPH_HINT
         }
         return
       }
@@ -148,7 +149,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
       const prompt = output.args.prompt as string | undefined
       if (!prompt || prompt.includes("[gitnexus]")) return
 
-      const hint = buildSubagentHint(cwd, config.scanDepth)
+      const hint = buildSubagentHint(cwd)
       if (!hint) return
 
       checkAndRefreshIfStale()

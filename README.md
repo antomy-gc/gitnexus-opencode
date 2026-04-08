@@ -78,8 +78,7 @@ Create `.opencode/gitnexus-opencode.json` (project) or `~/.config/opencode/gitne
 {
   "gitnexusVersion": "1.5.2",
   "autoRefreshStale": true,
-  "autoRefreshOnCommit": true,
-  "scanDepth": 1
+  "autoRefreshOnCommit": true
 }
 ```
 
@@ -88,7 +87,6 @@ Create `.opencode/gitnexus-opencode.json` (project) or `~/.config/opencode/gitne
 | `gitnexusVersion` | `"1.5.2"` | Pin the gitnexus npm version |
 | `autoRefreshStale` | `true` | Refresh stale indexes on session start and before subagent spawns |
 | `autoRefreshOnCommit` | `true` | Refresh after git commit/merge/rebase |
-| `scanDepth` | `1` | How deep to scan for repos in non-git directories |
 
 ## Build
 

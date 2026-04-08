@@ -28,7 +28,7 @@ function isGitRepo(dirPath: string): boolean {
  * Scan a directory for git repositories (1 level deep).
  * Returns info about each discovered repo.
  */
-export function discoverRepos(parentDir: string, depth: number = 1): RepoInfo[] {
+export function discoverRepos(parentDir: string): RepoInfo[] {
   const repos: RepoInfo[] = []
 
   // If parentDir itself is a git repo, return just it
@@ -42,7 +42,7 @@ export function discoverRepos(parentDir: string, depth: number = 1): RepoInfo[] 
     return repos
   }
 
-  if (depth < 1) return repos
+
 
   let entries: string[]
   try {

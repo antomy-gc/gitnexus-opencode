@@ -9,15 +9,14 @@ export interface PluginConfig {
   autoRefreshStale: boolean
   /** Automatically refresh after git mutations (commit, merge, etc.) */
   autoRefreshOnCommit: boolean
-  /** Max depth for subdirectory repo scanning (from non-git CWD) */
-  scanDepth: number
+
 }
 
 const DEFAULTS: PluginConfig = {
   gitnexusVersion: "1.5.2",
   autoRefreshStale: true,
   autoRefreshOnCommit: true,
-  scanDepth: 1,
+
 }
 
 const CONFIG_FILENAME = "gitnexus-opencode.json"

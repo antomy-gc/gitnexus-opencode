@@ -96,11 +96,12 @@ function buildUserToast(repos: RepoInfo[]): string | null {
 
   if (stale.length === 0 && unindexed.length === 0) return null
 
+  const total = stale.length + unindexed.length
   const parts: string[] = []
-  if (stale.length > 0) parts.push(`stale for ${stale.length}`)
-  if (unindexed.length > 0) parts.push(`missing for ${unindexed.length}`)
+  if (stale.length > 0) parts.push(`${stale.length} stale`)
+  if (unindexed.length > 0) parts.push(`${unindexed.length} unindexed`)
 
-  return `Knowledge graph is ${parts.join(" and ")} repo${stale.length + unindexed.length > 1 ? "s" : ""}. Ask agent to index.`
+  return `Knowledge graph: ${parts.join(", ")} repo${total > 1 ? "s" : ""}. Ask agent to index.`
 }
 
 const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
@@ -148,13 +149,13 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
         const sessionID = event.properties?.info?.id as string | undefined
 
         if (!isMcpAvailable(config)) {
-          const cmd = gitnexusCmd(config).join(" ")
-          log(`CLI not available (${cmd} --version failed). Plugin disabled for this session.`)
+          const cmdStr = gitnexusCmd(config).join(" ")
+          log(`CLI not available (${cmdStr} --version failed). Plugin disabled for this session.`)
           disabled = true
           return
         }
 
-        const repos = discoverRepos(cwd, config.scanDepth)
+        const repos = discoverRepos(cwd)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {
@@ -210,7 +211,7 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
 
     "tool.execute.after": async (
       input: { tool: string; args: Record<string, unknown> },
-      output: { result: string; args: Record<string, unknown> }
+      output: { output: string; args: Record<string, unknown> }
     ) => {
       toolHooks.onToolExecuteAfter(input, output)
     },

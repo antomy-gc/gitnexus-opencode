@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "fs"
-import { execSync } from "child_process"
+import { execFileSync } from "child_process"
 import { join } from "path"
 
 interface MetaJson {
@@ -23,7 +23,7 @@ export function readMeta(repoPath: string): MetaJson | null {
 /** Get current HEAD commit SHA, returns empty string for non-git dirs */
 function getHeadCommit(repoPath: string): string {
   try {
-    return execSync("git rev-parse HEAD", {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: repoPath,
       encoding: "utf-8",
       timeout: 5000,
@@ -53,10 +53,9 @@ export function commitsBehind(repoPath: string): number {
   const meta = readMeta(repoPath)
   if (!meta?.lastCommit) return 0
   try {
-    const count = execSync(
-      `git rev-list --count ${meta.lastCommit}..HEAD`,
-      { cwd: repoPath, encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] }
-    ).trim()
+    const count = execFileSync("git", ["rev-list", "--count", `${meta.lastCommit}..HEAD`], {
+      cwd: repoPath, encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+    }).trim()
     return parseInt(count, 10) || 0
   } catch {
     return 0

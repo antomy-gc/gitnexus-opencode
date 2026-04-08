@@ -142,7 +142,6 @@ Create a preference file only if any setting differs from defaults:
 | `gitnexusVersion` | `"1.5.2"` |
 | `autoRefreshStale` | `true` |
 | `autoRefreshOnCommit` | `true` |
-| `scanDepth` | `1` |
 
 If all defaults are fine, skip file creation.
 
@@ -176,4 +175,3 @@ Preference file: `~/.config/opencode/gitnexus-opencode.json` (global) or `.openc
 | `gitnexusVersion` | string | `"1.5.2"` | npm package version for gitnexus CLI |
 | `autoRefreshStale` | boolean | `true` | Auto-refresh stale indexes on session start |
 | `autoRefreshOnCommit` | boolean | `true` | Auto-refresh after git mutations |
-| `scanDepth` | number | `1` | Subdirectory depth for repo discovery |
