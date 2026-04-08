@@ -33,15 +33,18 @@ function buildSubagentHint(cwd: string, scanDepth: number): string {
   const repoLine = repoNames.length > 1 ? `Indexed repos: ${repoNames.join(", ")}.\n` : ""
 
   return `
-[gitnexus:PRIORITY] Code knowledge graph available. Try MCP tools first, fall back to CLI:
-  gitnexus_query(query="...", repo="${repo}") — find execution flows by concept
+[gitnexus] Code knowledge graph is indexed.${repoLine ? " " + repoLine.trim() : ""}
+For call chains, dependencies, blast radius, or execution flows:
+  gitnexus_query(query="...", repo="${repo}") — execution flows by concept
   gitnexus_context(name="...", repo="${repo}") — callers, callees, processes
   gitnexus_impact(target="...", direction="upstream", repo="${repo}") — blast radius
-If MCP tools are unavailable, use bash:
+If MCP tools unavailable, same via bash:
   npx gitnexus query --repo ${repo} "search terms"
   npx gitnexus context --repo ${repo} "SymbolName"
   npx gitnexus impact --repo ${repo} "SymbolName"
-${repoLine}Use grep ONLY for: literal strings, config values, log messages.`
+Graph is faster than grep for structural queries (1 call replaces 3-5 grep/read chains).
+Grep is better for: literal strings, config values, code patterns.
+Skip graph if your task is pure reasoning/review without code discovery.`
 }
 
 export function analyzeInBackground(

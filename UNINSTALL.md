@@ -31,7 +31,18 @@ Check if preference files exist:
 If found, ask: "Remove GitNexus plugin preferences?"
 If yes, delete them. If no, leave them (harmless without the plugin).
 
-## Step 4: Uninstall GitNexus CLI (optional)
+## Step 4: Remove GitNexus permissions (if added)
+
+Check `~/.config/opencode/opencode.json` for GitNexus permission entries:
+- `gitnexus_query`
+- `gitnexus_context`
+- `gitnexus_impact`
+
+If found in the `permission` object, ask: "Remove GitNexus tool permissions from OpenCode config?"
+If yes, remove those entries. If the `permission` object becomes empty, remove the key entirely.
+If no, leave them (harmless without the MCP server).
+
+## Step 5: Uninstall GitNexus CLI (optional)
 
 Only offer this step if the user chose to remove the MCP server in Step 2.
 If they kept the MCP server, skip — they still need the CLI.
@@ -51,6 +62,6 @@ npm uninstall -g gitnexus
 
 If not installed globally (npx only): no action needed.
 
-## Step 5: Restart OpenCode
+## Step 6: Restart OpenCode
 
 Tell the user: "Restart OpenCode to complete the removal."

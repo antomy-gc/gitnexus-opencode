@@ -113,7 +113,25 @@ Append to existing `plugin` array. Do not replace other plugins.
 
 **If `gitnexus-opencode` is already present**: no changes needed, report "Plugin already configured."
 
-## Step 4: Configure preferences
+## Step 4: Allow GitNexus tools for subagents
+
+By default, OpenCode's explore/librarian agents block all non-built-in tools (`"*": "deny"`). To let subagents use GitNexus graph tools directly (instead of falling back to slower CLI via bash), add top-level permissions to `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "permission": {
+    "gitnexus_query": "allow",
+    "gitnexus_context": "allow",
+    "gitnexus_impact": "allow"
+  }
+}
+```
+
+Merge into the existing file — do not replace other keys.
+
+**If the user declines**: the plugin still works. Subagents will use GitNexus CLI via bash as a fallback (slower, ~3-5s overhead per call).
+
+## Step 5: Configure preferences
 
 Ask: "Do you want GitNexus to automatically refresh stale indexes on session start and after commits? (yes is default)"
 
@@ -136,7 +154,7 @@ Otherwise, write `~/.config/opencode/gitnexus-opencode.json` (global) or `.openc
 }
 ```
 
-## Step 5: Restart OpenCode
+## Step 6: Restart OpenCode
 
 Tell the user: "Restart OpenCode to activate the GitNexus plugin.
 On the next session start, the plugin will automatically detect missing or stale indexes and offer to build them."
