@@ -1,4 +1,5 @@
 import { execSync } from "child_process"
+import { tool } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos, type RepoInfo } from "./discovery.js"
 import { commitsBehind } from "./staleness.js"
@@ -12,10 +13,6 @@ interface SessionPromptBody {
 interface ToastBody {
   message: string
   variant: "info" | "success" | "error"
-}
-
-interface ToolContext {
-  sessionID: string
 }
 
 interface PluginContext {
@@ -98,7 +95,7 @@ function buildUserToast(repos: RepoInfo[]): string | null {
   return `Knowledge graph is ${parts.join(" and ")} repo${stale.length + unindexed.length > 1 ? "s" : ""}. Ask agent to index.`
 }
 
-const plugin = async (ctx: PluginContext) => {
+const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
   const cwd = ctx.directory
   const config = loadConfig(cwd)
   let disabled = false
@@ -109,19 +106,13 @@ const plugin = async (ctx: PluginContext) => {
 
   const toolHooks = createToolHooks(cwd, config, () => disabled)
 
-  const tool: Record<string, unknown> = {
-    gitnexus_analyze: {
+  const tools = {
+    gitnexus_analyze: tool({
       description: "Build or refresh the GitNexus code knowledge graph for a repository. Takes 30-120s.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "Path to the git repository. Defaults to current directory.",
-          },
-        },
+      args: {
+        path: tool.schema.string().optional().describe("Path to the git repository. Defaults to current directory."),
       },
-      async execute(args: { path?: string }, toolCtx: ToolContext) {
+      async execute(args) {
         const repoPath = args.path || cwd
         const cmd = gitnexusCmd(config)
         try {
@@ -135,11 +126,11 @@ const plugin = async (ctx: PluginContext) => {
           return `Failed to build graph: ${msg}`
         }
       },
-    },
+    }),
   }
 
   return {
-    tool,
+    tool: tools,
 
     event: async ({ event }: { event: { type: string; properties: Record<string, any> } }) => {
       if (event.type === "session.created") {

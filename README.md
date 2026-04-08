@@ -2,32 +2,44 @@
 
 OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automatic code graph indexing, staleness detection, and AI agent hints.
 
+**Status: alpha.** Core logic written, plugin loads in OpenCode, custom tool registers. Session start hooks (toast, context injection) have bugs being fixed.
+
 ## What it does
 
 **On session start:**
 - Verifies GitNexus CLI is reachable (disables plugin if not)
 - Discovers git repos (current dir + subdirectories)
-- Injects graph status into agent context (facts only, no instructions)
+- Injects graph status into agent context via `session.prompt({ noReply: true })` (facts only, no instructions)
 - Shows toast to the user: `Knowledge graph is stale for 1 and missing for 2 repos. Ask agent to index.`
 - Background-refreshes stale indexes
 
-**During the session:**
+**Custom tool:**
 
-| Mechanism | Trigger | Action |
-|-----------|---------|--------|
-| `gitnexus_analyze` tool | Agent or user request | Build/refresh graph for a repo |
+`gitnexus_analyze` — builds or refreshes the code knowledge graph. Registered via `@opencode-ai/plugin` SDK with `tool()` wrapper. Available to main agent and all subagents.
+
+**Tool hooks:**
+
+| Hook | Trigger | Action |
+|------|---------|--------|
 | `tool.execute.after` on `skill` | Skill loaded | Inject graph prerequisite for `init-deep`/`init`, light hint for others |
 | `tool.execute.after` on `bash` | Git mutation detected | Background re-index |
 | `tool.execute.before` on `task` | Subagent spawned | Check staleness (catches external commits), inject GitNexus MCP hint |
 
-## Install
+## Install (local development)
 
-Give your OpenCode agent the [INSTALL.md](./INSTALL.md) file and ask it to follow the instructions. Or manually:
+Build the plugin:
+```bash
+npm install && npm run build
+```
 
+Copy the bundled file to OpenCode plugins directory:
+```bash
+cp dist/gitnexus-opencode.js ~/.config/opencode/plugins/
+```
+
+Ensure GitNexus MCP is configured in `~/.config/opencode/config.json`:
 ```json
-// ~/.config/opencode/config.json
 {
-  "plugin": ["gitnexus-opencode"],
   "mcp": {
     "gitnexus": {
       "type": "local",
@@ -37,7 +49,7 @@ Give your OpenCode agent the [INSTALL.md](./INSTALL.md) file and ask it to follo
 }
 ```
 
-Restart OpenCode. The plugin will show a toast if indexes are missing or stale.
+Restart OpenCode.
 
 ## Configuration
 
@@ -59,17 +71,27 @@ Create `.opencode/gitnexus-opencode.json` (project) or `~/.config/opencode/gitne
 | `autoRefreshOnCommit` | `true` | Refresh after git commit/merge/rebase |
 | `scanDepth` | `1` | How deep to scan for repos in non-git directories |
 
+## Build
+
+```bash
+npm run build    # tsc + esbuild bundle
+```
+
+Produces `dist/gitnexus-opencode.js` — single file (~12KB), all internal modules bundled, `@opencode-ai/plugin` as external (resolved from OpenCode runtime).
+
 ## Uninstall
 
-Give your OpenCode agent the [UNINSTALL.md](./UNINSTALL.md) file, or manually remove `"gitnexus-opencode"` from the `plugin` array in your config.
+Remove `~/.config/opencode/plugins/gitnexus-opencode.js` and restart OpenCode.
+
+For full cleanup see [UNINSTALL.md](./UNINSTALL.md).
 
 ## How it works
 
 The plugin uses OpenCode's native plugin API — no forks, no patches, no modifications to existing skills.
 
-On session start it verifies the GitNexus CLI is reachable. If not, the plugin disables itself for that session. If available, it discovers repos (including in parent directories), injects graph status as context for the agent (facts only — no advice), shows an actionable toast to the user, and refreshes stale indexes in background.
+On session start it verifies the GitNexus CLI is reachable. If not, the plugin disables itself for that session. It discovers repos (including in parent directories), injects graph status as context for the agent, shows an actionable toast to the user, and refreshes stale indexes in background.
 
-It registers a `gitnexus_analyze` custom tool that the agent can call to build or refresh graphs on demand. During the session it injects lightweight hints (~150 tokens) into agent and subagent contexts so they know the code graph is available. Before spawning subagents it checks for external commits (e.g., made in a separate terminal) and triggers background re-indexing if needed.
+It registers a `gitnexus_analyze` custom tool via `@opencode-ai/plugin` SDK (uses `tool.schema` for Zod args, keeping the plugin dependency-free — zod comes from the SDK at runtime). During the session it injects lightweight hints (~150 tokens) into agent and subagent contexts. Before spawning subagents it checks for external commits and triggers background re-indexing if needed.
 
 ## License
 
