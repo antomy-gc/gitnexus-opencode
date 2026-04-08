@@ -10,12 +10,12 @@ This document is intended for an AI agent (OpenCode) to follow step by step.
 
 ## Step 1: Check GitNexus CLI
 
-Run:
+Check global install first, then npx cache:
 ```bash
-gitnexus --version 2>/dev/null || echo "not installed"
+gitnexus --version 2>/dev/null || npx -y gitnexus --version 2>/dev/null || echo "not available"
 ```
 
-**If not installed**: ask the user:
+**If not available**: ask the user:
 "GitNexus CLI is not installed. Install it?
 - **Yes, version 1.5.2** (last known stable, recommended)
 - **Yes, latest**
@@ -26,16 +26,18 @@ If installing:
 npm install -g gitnexus@<chosen-version>
 ```
 
-**If already installed**: report the current version and ask:
-"GitNexus <current-version> is installed. What do you want to do?
+**If available**: report the current version and how it was found (global or npx). Ask:
+"GitNexus <current-version> is available (<global install / npx cache>). What do you want to do?
 - **Keep it** — plugin will use this version
 - **Switch to 1.5.2** (recommended stable)
 - **Switch to a different version**"
 
-If switching:
+If switching and user wants global install:
 ```bash
 npm install -g gitnexus@<chosen-version>
 ```
+
+If switching but keeping npx-only, just note the version — it will be set in the MCP config and preferences.
 
 Remember the chosen version for subsequent steps.
 Default: `1.5.2` if nothing else specified.
