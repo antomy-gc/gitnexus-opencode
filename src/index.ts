@@ -28,6 +28,12 @@ interface PluginContext {
       prompt: (opts: {
         path: { id: string }
         body: SessionPromptBody
+        query?: { directory: string }
+      }) => Promise<unknown>
+      promptAsync?: (opts: {
+        path: { id: string }
+        body: SessionPromptBody
+        query?: { directory: string }
       }) => Promise<unknown>
     }
     tui: {
@@ -161,14 +167,20 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
         if (sessionID) {
           const agentContext = buildAgentContext(repos)
           if (agentContext) {
+            const promptArgs = {
+              path: { id: sessionID },
+              body: {
+                noReply: true as const,
+                parts: [{ type: "text" as const, text: agentContext }],
+              },
+              query: { directory: cwd },
+            }
             try {
-              await ctx.client.session.prompt({
-                path: { id: sessionID },
-                body: {
-                  noReply: true,
-                  parts: [{ type: "text", text: agentContext }],
-                },
-              })
+              if (typeof ctx.client.session.promptAsync === "function") {
+                await ctx.client.session.promptAsync(promptArgs)
+              } else {
+                await ctx.client.session.prompt(promptArgs)
+              }
               log(`Agent context injected for session ${sessionID}`)
             } catch (err) {
               log(`session.prompt failed: ${err instanceof Error ? err.message : String(err)}`)
