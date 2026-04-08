@@ -11,8 +11,10 @@ interface SessionPromptBody {
 }
 
 interface ToastBody {
+  title?: string
   message: string
-  variant: "info" | "success" | "error"
+  variant: "info" | "success" | "error" | "warning"
+  duration?: number
 }
 
 interface PluginContext {
@@ -133,17 +135,20 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
     tool: tools,
 
     event: async ({ event }: { event: { type: string; properties: Record<string, any> } }) => {
-      if (event.type === "session.created") {
+      if (event.type !== "session.created") return
+
+      try {
         const sessionID = event.properties?.info?.id as string | undefined
 
         if (!isMcpAvailable(config)) {
           const cmd = gitnexusCmd(config).join(" ")
-          log(`[gitnexus] CLI not available (${cmd} --version failed). Plugin disabled.`)
+          log(`CLI not available (${cmd} --version failed). Plugin disabled for this session.`)
           disabled = true
           return
         }
 
         const repos = discoverRepos(cwd, config.scanDepth)
+        log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {
           for (const repo of repos) {
@@ -156,22 +161,37 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
         if (sessionID) {
           const agentContext = buildAgentContext(repos)
           if (agentContext) {
-            await ctx.client.session.prompt({
-              path: { id: sessionID },
-              body: {
-                noReply: true,
-                parts: [{ type: "text", text: agentContext }],
-              },
-            })
+            try {
+              await ctx.client.session.prompt({
+                path: { id: sessionID },
+                body: {
+                  noReply: true,
+                  parts: [{ type: "text", text: agentContext }],
+                },
+              })
+              log(`Agent context injected for session ${sessionID}`)
+            } catch (err) {
+              log(`session.prompt failed: ${err instanceof Error ? err.message : String(err)}`)
+            }
           }
         }
 
         const toastMessage = buildUserToast(repos)
         if (toastMessage) {
-          await ctx.client.tui.showToast({
-            body: { message: toastMessage, variant: "info" },
-          })
+          // Delay toast so it appears after oh-my-openagent's 5s spinner animation
+          setTimeout(() => {
+            ctx.client.tui.showToast({
+              body: {
+                title: "GitNexus",
+                message: toastMessage,
+                variant: "info",
+                duration: 5000,
+              },
+            }).catch(() => {})
+          }, 6000)
         }
+      } catch (err) {
+        log(`session.created handler error: ${err instanceof Error ? err.message : String(err)}`)
       }
     },
 

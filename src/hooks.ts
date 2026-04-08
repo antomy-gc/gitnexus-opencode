@@ -1,5 +1,5 @@
 import { execSync, spawn } from "child_process"
-import { existsSync } from "fs"
+import { existsSync, openSync } from "fs"
 import { join } from "path"
 import { gitnexusCmd, type PluginConfig } from "./config.js"
 import { hasIndex, readMeta } from "./staleness.js"
@@ -35,8 +35,9 @@ export function analyzeInBackground(
   onDone?: () => void
 ) {
   const cmd = gitnexusCmd(config)
+  const devNull = openSync("/dev/null", "w")
   const child = spawn(cmd[0], [...cmd.slice(1), "analyze", repoPath], {
-    stdio: "ignore",
+    stdio: ["ignore", devNull, devNull],
     detached: true,
     cwd: repoPath,
   })
