@@ -114,6 +114,8 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
 
   const toolHooks = createToolHooks(cwd, config, () => disabled)
 
+  const cmd = gitnexusCmd(config)
+
   const tools = {
     gitnexus_analyze: tool({
       description: "Build or refresh the GitNexus code knowledge graph for a repository. Takes 30-120s.",
@@ -122,7 +124,6 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
       },
       async execute(args) {
         const repoPath = args.path || cwd
-        const cmd = gitnexusCmd(config)
         try {
           const result = execSync(
             [...cmd, "analyze", repoPath].join(" "),

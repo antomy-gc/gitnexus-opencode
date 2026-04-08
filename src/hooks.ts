@@ -21,13 +21,28 @@ After analyze completes, use gitnexus_query/context/cypher instead of spawning
 explore agents for codebase understanding.
 Only spawn explore agents for: conventions, anti-patterns, CI/build.`
 
-const SUBAGENT_HINT = `
-[gitnexus] Code knowledge graph is indexed for this repo.
-Before grepping for structure/flows/dependencies, try:
-  gitnexus_query({query}) — find code by concept
-  gitnexus_context({name}) — callers/callees/flows
-  gitnexus_impact({target, direction: "upstream"}) — blast radius
-Use grep only for: comments, config files, runtime behavior.`
+const TASK_TOOL_NAMES = new Set(["task", "Task", "call_omo_agent"])
+
+function buildSubagentHint(cwd: string, scanDepth: number): string {
+  const repos = discoverRepos(cwd, scanDepth)
+  const indexed = repos.filter((r) => r.hasIndex)
+  if (indexed.length === 0) return ""
+
+  const repoNames = indexed.map((r) => r.name)
+  const repo = repoNames[0]
+  const repoLine = repoNames.length > 1 ? `Indexed repos: ${repoNames.join(", ")}.\n` : ""
+
+  return `
+[gitnexus:PRIORITY] Code knowledge graph available. Try MCP tools first, fall back to CLI:
+  gitnexus_query(query="...", repo="${repo}") — find execution flows by concept
+  gitnexus_context(name="...", repo="${repo}") — callers, callees, processes
+  gitnexus_impact(target="...", direction="upstream", repo="${repo}") — blast radius
+If MCP tools are unavailable, use bash:
+  npx gitnexus query --repo ${repo} "search terms"
+  npx gitnexus context --repo ${repo} "SymbolName"
+  npx gitnexus impact --repo ${repo} "SymbolName"
+${repoLine}Use grep ONLY for: literal strings, config values, log messages.`
+}
 
 export function analyzeInBackground(
   repoPath: string,
@@ -125,17 +140,16 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
       output: { args: Record<string, unknown> }
     ) {
       if (disabled()) return
-      if (input.tool !== "task") return
+      if (!TASK_TOOL_NAMES.has(input.tool)) return
+
       const prompt = output.args.prompt as string | undefined
       if (!prompt || prompt.includes("[gitnexus]")) return
 
-      const anyIndexed =
-        existsSync(join(cwd, ".gitnexus", "meta.json")) ||
-        discoverRepos(cwd, 1).some((r) => r.hasIndex)
-      if (!anyIndexed) return
+      const hint = buildSubagentHint(cwd, config.scanDepth)
+      if (!hint) return
 
       checkAndRefreshIfStale()
-      output.args.prompt = prompt + SUBAGENT_HINT
+      output.args.prompt = prompt + hint
     },
   }
 }
