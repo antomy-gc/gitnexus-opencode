@@ -1,46 +1,10 @@
 import { execFileSync } from "node:child_process"
-import { tool } from "@opencode-ai/plugin"
+import { tool, type Plugin } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos, type RepoInfo } from "./discovery.js"
 import { commitsBehind } from "./staleness.js"
 import { analyzeInBackground, createToolHooks } from "./hooks.js"
 
-interface SessionPromptBody {
-  noReply: true
-  parts: Array<{ type: "text"; text: string }>
-}
-
-interface ToastBody {
-  title?: string
-  message: string
-  variant: "info" | "success" | "error" | "warning"
-  duration?: number
-}
-
-interface PluginContext {
-  directory: string
-  $: (cmd: TemplateStringsArray, ...args: unknown[]) => Promise<unknown>
-  client: {
-    app: {
-      log: (opts: { service: string; level: string; message: string }) => Promise<void>
-    }
-    session: {
-      prompt: (opts: {
-        path: { id: string }
-        body: SessionPromptBody
-        query?: { directory: string }
-      }) => Promise<unknown>
-      promptAsync?: (opts: {
-        path: { id: string }
-        body: SessionPromptBody
-        query?: { directory: string }
-      }) => Promise<unknown>
-    }
-    tui: {
-      showToast: (opts: { body: ToastBody }) => Promise<unknown>
-    }
-  }
-}
 
 function isMcpAvailable(config: ReturnType<typeof loadConfig>): boolean {
   const cmd = gitnexusCmd(config)
@@ -104,16 +68,16 @@ function buildUserToast(repos: RepoInfo[]): string | null {
   return `Knowledge graph: ${parts.join(", ")} repo${total > 1 ? "s" : ""}. Ask agent to index.`
 }
 
-const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
-  const cwd = ctx.directory
-  const config = loadConfig(cwd)
+const plugin: Plugin = async ({ directory, worktree, client }) => {
+  const scanRoot = worktree ?? directory
+  const config = loadConfig(scanRoot)
   let disabled = false
 
-  const log = (message: string) => {
-    ctx.client.app.log({ service: "gitnexus", level: "info", message })
+  const log = (message: string, level: "debug" | "info" | "warn" | "error" = "info") => {
+    void client.app.log({ body: { service: "gitnexus", level, message } })
   }
 
-  const toolHooks = createToolHooks(cwd, config, () => disabled)
+  const toolHooks = createToolHooks(scanRoot, config, () => disabled)
 
   const cmd = gitnexusCmd(config)
 
@@ -124,7 +88,7 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
         path: tool.schema.string().optional().describe("Path to the git repository. Defaults to current directory."),
       },
       async execute(args) {
-        const repoPath = args.path || cwd
+        const repoPath = args.path || scanRoot
         try {
           const result = execFileSync(
             cmd[0],
@@ -143,11 +107,11 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
   return {
     tool: tools,
 
-    event: async ({ event }: { event: { type: string; properties: Record<string, any> } }) => {
+    event: async ({ event }) => {
       if (event.type !== "session.created") return
 
       try {
-        const sessionID = event.properties?.info?.id as string | undefined
+        const sessionID = (event.properties as { info?: { id?: string } } | undefined)?.info?.id
 
         if (!isMcpAvailable(config)) {
           const cmdStr = gitnexusCmd(config).join(" ")
@@ -156,7 +120,7 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
           return
         }
 
-        const repos = discoverRepos(cwd)
+        const repos = discoverRepos(scanRoot)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {
@@ -176,17 +140,17 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
                 noReply: true as const,
                 parts: [{ type: "text" as const, text: agentContext }],
               },
-              query: { directory: cwd },
+              query: { directory: scanRoot },
             }
             try {
-              if (typeof ctx.client.session.promptAsync === "function") {
-                await ctx.client.session.promptAsync(promptArgs)
+              if (typeof client.session.promptAsync === "function") {
+                await client.session.promptAsync(promptArgs)
               } else {
-                await ctx.client.session.prompt(promptArgs)
+                await client.session.prompt(promptArgs)
               }
               log(`Agent context injected for session ${sessionID}`)
             } catch (err) {
-              log(`session.prompt failed: ${err instanceof Error ? err.message : String(err)}`)
+              log(`session.prompt failed: ${err instanceof Error ? err.message : String(err)}`, "warn")
             }
           }
         }
@@ -195,7 +159,7 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
         if (toastMessage) {
           // Delay toast so it appears after oh-my-openagent's 5s spinner animation
           setTimeout(() => {
-            ctx.client.tui.showToast({
+            client.tui.showToast({
               body: {
                 title: "GitNexus",
                 message: toastMessage,
@@ -206,21 +170,15 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
           }, 6000)
         }
       } catch (err) {
-        log(`session.created handler error: ${err instanceof Error ? err.message : String(err)}`)
+        log(`session.created handler error: ${err instanceof Error ? err.message : String(err)}`, "error")
       }
     },
 
-    "tool.execute.after": async (
-      input: { tool: string; args: Record<string, unknown> },
-      output: { output: string; args: Record<string, unknown> }
-    ) => {
+    "tool.execute.after": async (input, output) => {
       toolHooks.onToolExecuteAfter(input, output)
     },
 
-    "tool.execute.before": async (
-      input: { tool: string; args: Record<string, unknown> },
-      output: { args: Record<string, unknown> }
-    ) => {
+    "tool.execute.before": async (input, output) => {
       toolHooks.onToolExecuteBefore(input, output)
     },
   }

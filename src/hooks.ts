@@ -105,8 +105,8 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
 
   return {
     onToolExecuteAfter(
-      input: { tool: string; args: Record<string, unknown> },
-      output: { output: string; args: Record<string, unknown> }
+      input: { tool: string; args: any },
+      output: { output: string }
     ) {
       if (disabled()) return
 
@@ -140,8 +140,8 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
     },
 
     onToolExecuteBefore(
-      input: { tool: string; args: Record<string, unknown> },
-      output: { args: Record<string, unknown> }
+      input: { tool: string },
+      output: { args: any }
     ) {
       if (disabled()) return
       if (!TASK_TOOL_NAMES.has(input.tool)) return
