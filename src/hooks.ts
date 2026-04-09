@@ -3,7 +3,12 @@ import { closeSync, existsSync, openSync } from "fs"
 import { join } from "path"
 import { gitnexusCmd, type PluginConfig } from "./config.js"
 import { hasIndex } from "./staleness.js"
-import { discoverRepos, type RepoInfo } from "./discovery.js"
+import { discoverRepos } from "./discovery.js"
+import {
+  markRefreshing,
+  markRefreshDone,
+  refreshHintCache,
+} from "./hint-envelope.js"
 
 const GIT_MUTATION_RE =
   /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*git(?:\s+-C\s+\S+|\s+--\S+(?:=\S+)?)*\s+(commit|merge|rebase|pull|cherry-pick|switch|reset)\b/
@@ -22,50 +27,32 @@ After analyze completes, use gitnexus_query/context/cypher instead of spawning
 explore agents for codebase understanding.
 Only spawn explore agents for: conventions, anti-patterns, CI/build.`
 
-const TASK_TOOL_NAMES = new Set(["task", "Task", "call_omo_agent"])
-
-let cachedHint = ""
-
-export function refreshHint(scanRoot: string): void {
-  const repos = discoverRepos(scanRoot)
-  cachedHint = buildSubagentHintFromRepos(repos)
-}
-
-function buildSubagentHintFromRepos(repos: RepoInfo[]): string {
-  const indexed = repos.filter((r) => r.hasIndex)
-  if (indexed.length === 0) return ""
-
-  const repoNames = indexed.map((r) => r.name)
-  const repo = repoNames[0]
-  const repoLine = repoNames.length > 1 ? `Indexed repos: ${repoNames.join(", ")}.\n` : ""
-
-  return `
-[gitnexus] Code knowledge graph is indexed.${repoLine ? " " + repoLine.trim() : ""}
-For call chains, dependencies, blast radius, or execution flows:
-  gitnexus_query(query="...", repo="${repo}") — execution flows by concept
-  gitnexus_context(name="...", repo="${repo}") — callers, callees, processes
-  gitnexus_impact(target="...", direction="upstream", repo="${repo}") — blast radius
-If MCP tools unavailable, same via bash:
-  npx gitnexus query --repo ${repo} "search terms"
-  npx gitnexus context --repo ${repo} "SymbolName"
-  npx gitnexus impact --repo ${repo} "SymbolName"
-Graph is faster than grep for structural queries (1 call replaces 3-5 grep/read chains).
-Grep is better for: literal strings, config values, code patterns.
-Skip graph if your task is pure reasoning/review without code discovery.`
-}
-
 const inFlight = new Set<string>()
 
+/**
+ * Schedule a background analyze for `repoPath`. The hint cache is rebuilt
+ * twice:
+ *   1. Before spawn — so the next messages.transform turn sees freshness="refreshing"
+ *   2. In the close callback — so the cache transitions back to up_to_date
+ *      (or may_be_stale if HEAD drifted again during analyze)
+ *
+ * `scanRoot` is the directory used for repo discovery when rebuilding the
+ * cache. It is captured by closure into the spawn callbacks so the cache
+ * always reflects the orchestrator's view of the workspace.
+ */
 export function scheduleAnalyze(
   repoPath: string,
   config: PluginConfig,
-  onDone?: () => void
+  scanRoot: string,
 ): boolean {
   if (inFlight.has(repoPath)) return false
   inFlight.add(repoPath)
+  markRefreshing(repoPath)
+  refreshHintCache(scanRoot)
   analyzeInBackground(repoPath, config, () => {
     inFlight.delete(repoPath)
-    onDone?.()
+    markRefreshDone(repoPath)
+    refreshHintCache(scanRoot)
   })
   return true
 }
@@ -119,24 +106,9 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
 
         const repoPath = findGitRoot(cwd)
         if (repoPath && hasIndex(repoPath)) {
-          scheduleAnalyze(repoPath, config, () => refreshHint(cwd))
+          scheduleAnalyze(repoPath, config, cwd)
         }
       }
-    },
-
-    onToolExecuteBefore(
-      input: { tool: string },
-      output: { args: any }
-    ) {
-      if (disabled()) return
-      if (!TASK_TOOL_NAMES.has(input.tool)) return
-
-      const prompt = output.args.prompt as string | undefined
-      if (!prompt || prompt.includes("[gitnexus]")) return
-
-      if (!cachedHint) return
-
-      output.args.prompt = prompt + cachedHint
     },
   }
 }

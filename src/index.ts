@@ -103,7 +103,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
         if (config.autoRefreshStale) {
           for (const repo of repos) {
             if (repo.hasIndex && repo.isStale) {
-              scheduleAnalyze(repo.path, config, () => refreshHintCache(scanRoot))
+              scheduleAnalyze(repo.path, config, scanRoot)
             }
           }
         }
