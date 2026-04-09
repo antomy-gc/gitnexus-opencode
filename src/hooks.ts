@@ -52,32 +52,61 @@ export function scheduleAnalyze(
   scanRoot: string,
 ): boolean {
   if (inFlight.has(repoPath)) return false
+
   inFlight.add(repoPath)
   markRefreshing(repoPath)
   refreshHintCache(scanRoot)
-  analyzeInBackground(repoPath, config, () => {
+
+  const cleanup = () => {
     inFlight.delete(repoPath)
     markRefreshDone(repoPath)
     refreshHintCache(scanRoot)
-  })
-  return true
+  }
+
+  try {
+    analyzeInBackground(repoPath, config, cleanup)
+    return true
+  } catch {
+    // spawn() threw synchronously (e.g. openSync EACCES, invalid argv).
+    // Without this cleanup the repo would be stuck in the `refreshing`
+    // state and future scheduleAnalyze calls would short-circuit on
+    // inFlight.has(repoPath) forever.
+    cleanup()
+    return false
+  }
 }
 
 function analyzeInBackground(
   repoPath: string,
   config: PluginConfig,
-  onDone?: () => void
+  onDone: () => void,
 ) {
   const cmd = gitnexusCmd(config)
   const devNull = openSync("/dev/null", "w")
-  const child = spawn(cmd[0], [...cmd.slice(1), "analyze", repoPath], {
-    stdio: ["ignore", devNull, devNull],
-    detached: true,
-    cwd: repoPath,
-  })
-  closeSync(devNull)
+  let child
+  try {
+    child = spawn(cmd[0], [...cmd.slice(1), "analyze", repoPath], {
+      stdio: ["ignore", devNull, devNull],
+      detached: true,
+      cwd: repoPath,
+    })
+  } finally {
+    closeSync(devNull)
+  }
   child.unref()
-  if (onDone) child.on("close", onDone)
+  // `close` fires for both clean exits and spawn-level failures (e.g. ENOENT
+  // still emits close with code -2). `error` fires when the OS cannot start
+  // the process at all; without a listener Node turns it into an uncaught
+  // exception that would crash the plugin host. Both paths funnel into the
+  // same cleanup so the refreshing state cannot leak.
+  let settled = false
+  const settleOnce = () => {
+    if (settled) return
+    settled = true
+    onDone()
+  }
+  child.on("close", settleOnce)
+  child.on("error", settleOnce)
 }
 
 export function createToolHooks(cwd: string, config: PluginConfig, disabled: () => boolean) {
@@ -157,19 +186,30 @@ export function createMessagesTransformHandler(deps: MessagesTransformDeps = {})
     output: { messages: MessageEntry[] },
   ): Promise<void> {
     try {
-      const lastUser = [...output.messages].reverse().find((m) => m.info.role === "user")
-      if (!lastUser) return
+      if (output.messages.length === 0) return
+      // Only inject when the LAST message is the current user prompt. This
+      // guards against mutating a historical user message during internal
+      // follow-up LLM calls where the tail is not a user turn.
+      const last = output.messages[output.messages.length - 1]!
+      if (last.info.role !== "user") return
 
-      const textPart = lastUser.parts.find(
+      const textPart = last.parts.find(
         (p) => p.type === "text" && typeof (p as { text?: unknown }).text === "string",
       ) as TextPart | undefined
       if (!textPart) return
 
-      const sessionID = lastUser.info.sessionID
+      const sessionID = last.info.sessionID
       if (!sessionID) return
 
       const originalText = textPart.text
-      const hasMarker = originalText.includes(OPT_IN_MARKER)
+
+      // Scrub any leading stale envelope BEFORE checking for the marker, so a
+      // previously-injected envelope (which contains the OPT_IN_MARKER literal
+      // inside its <subagent_propagation> section) cannot masquerade as a fresh
+      // opt-in after compaction or rehydration. The marker detection must see
+      // only what the orchestrator wrote, not the plugin's own previous output.
+      const scrubbed = scrubPromptGitnexusBlocks(originalText)
+      const hasMarker = scrubbed.includes(OPT_IN_MARKER)
       const main = isMain(sessionID)
       const eligible = main || hasMarker
       if (!eligible) return
@@ -177,7 +217,6 @@ export function createMessagesTransformHandler(deps: MessagesTransformDeps = {})
       const cache = getCache()
       if (cache.freshness === "missing") return
 
-      const scrubbed = scrubPromptGitnexusBlocks(originalText)
       const cleaned = hasMarker ? stripOptInMarker(scrubbed) : scrubbed
 
       textPart.text = `${cache.envelope}\n\n${cleaned}`

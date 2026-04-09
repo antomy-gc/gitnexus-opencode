@@ -140,14 +140,46 @@ describe("stripOptInMarker", () => {
     assert.equal(stripOptInMarker("plain text"), "plain text")
   })
 
-  it("strips a leading marker and trims", () => {
+  it("strips a leading inline marker and trims leading spaces", () => {
     assert.equal(stripOptInMarker(`${OPT_IN_MARKER} find foo`), "find foo")
   })
 
-  it("strips a marker in the middle and normalizes whitespace", () => {
+  it("strips a solo-line marker at the start without leaving a blank line", () => {
     assert.equal(
-      stripOptInMarker(`find foo ${OPT_IN_MARKER} bar`),
-      "find foo bar",
+      stripOptInMarker(`${OPT_IN_MARKER}\nreal instructions`),
+      "real instructions",
+    )
+  })
+
+  it("strips a solo-line marker in the middle and joins the two neighboring lines", () => {
+    assert.equal(
+      stripOptInMarker(`foo\n${OPT_IN_MARKER}\nbar`),
+      "foo\nbar",
+    )
+  })
+
+  it("strips a solo-line marker surrounded by horizontal whitespace", () => {
+    assert.equal(
+      stripOptInMarker(`   ${OPT_IN_MARKER}   \nreal instructions`),
+      "real instructions",
+    )
+  })
+
+  it("preserves multi-line code blocks after an inline marker", () => {
+    const input =
+      `${OPT_IN_MARKER} refactor this:\n\n\`\`\`ts\nfunction foo() {\n  return 1\n}\n\`\`\``
+    const expected =
+      "refactor this:\n\n```ts\nfunction foo() {\n  return 1\n}\n```"
+    assert.equal(stripOptInMarker(input), expected)
+  })
+
+  it("preserves newlines and indentation around a mid-sentence marker", () => {
+    const input = `line1\nline2 ${OPT_IN_MARKER} still line2\n  indented line3`
+    // inline strip leaves a double space where the marker used to be,
+    // but the newlines and indentation are untouched
+    assert.equal(
+      stripOptInMarker(input),
+      "line1\nline2  still line2\n  indented line3",
     )
   })
 
@@ -155,10 +187,16 @@ describe("stripOptInMarker", () => {
     assert.equal(stripOptInMarker(OPT_IN_MARKER), "")
   })
 
-  it("strips multiple occurrences", () => {
+  it("strips marker-only-with-newline to empty string", () => {
+    assert.equal(stripOptInMarker(`${OPT_IN_MARKER}\n`), "")
+  })
+
+  it("strips multiple inline occurrences but preserves interior whitespace", () => {
+    // two separate inline markers leave a double space each; that is
+    // intentional, because we do NOT rewrite user whitespace.
     assert.equal(
       stripOptInMarker(`${OPT_IN_MARKER} a ${OPT_IN_MARKER} b`),
-      "a b",
+      "a  b",
     )
   })
 })

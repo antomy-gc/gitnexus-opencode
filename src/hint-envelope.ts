@@ -107,12 +107,45 @@ export function scrubPromptGitnexusBlocks(text: string): string {
 }
 
 /**
- * Strip every occurrence of OPT_IN_MARKER from a prompt and normalize the
- * resulting whitespace so the subagent doesn't see the literal marker text.
+ * Remove every occurrence of OPT_IN_MARKER from a prompt without touching
+ * any other whitespace. Multi-line structure, indentation, markdown, and
+ * code fences are preserved verbatim.
+ *
+ * If the marker sat alone on its own line, the now-empty line is removed
+ * so the orchestrator can write:
+ *
+ *     [[gitnexus:graph]]
+ *     real instructions here
+ *
+ * and the subagent sees just `real instructions here` without a leading
+ * blank line. Any other blank lines the user wrote are left intact.
  */
 export function stripOptInMarker(text: string): string {
   if (!text.includes(OPT_IN_MARKER)) return text
-  return text.split(OPT_IN_MARKER).join("").replace(/\s+/g, " ").trim()
+
+  // Step 1: if a marker sits alone on its own line (optionally surrounded by
+  // horizontal whitespace), remove the entire line including its newline.
+  //   "[[gitnexus:graph]]\n..."    -> "..."
+  //   "foo\n   [[gitnexus:graph]]   \nbar" -> "foo\nbar"
+  const SOLO_LINE = new RegExp(
+    `(^|\r?\n)[ \t]*${escapeRegex(OPT_IN_MARKER)}[ \t]*(?=\r?\n|$)\r?\n?`,
+    "g",
+  )
+  let out = text.replace(SOLO_LINE, (_m, lead) => lead)
+
+  // Step 2: strip any remaining inline occurrences verbatim. The surrounding
+  // whitespace is left alone so interior code / markdown / structure survives.
+  out = out.split(OPT_IN_MARKER).join("")
+
+  // Step 3: trim only the very first leading horizontal whitespace run and the
+  // very last trailing horizontal whitespace run, so the envelope still gets a
+  // clean join target. Interior newlines are preserved; leading newlines left
+  // by the user are also preserved.
+  return out.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function escapeXml(value: string): string {

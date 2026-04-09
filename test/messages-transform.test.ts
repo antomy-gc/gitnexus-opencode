@@ -26,6 +26,7 @@ function makeOutput(opts: {
   sessionID?: string
   noText?: boolean
   noUserMessage?: boolean
+  trailingAssistant?: boolean
 }): Output {
   if (opts.noUserMessage) {
     return { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "hi" }] }] }
@@ -33,14 +34,19 @@ function makeOutput(opts: {
   const parts: Array<{ type: string; text?: string }> = opts.noText
     ? [{ type: "image" }]
     : [{ type: "text", text: opts.text ?? "user prompt" }]
-  return {
-    messages: [
-      {
-        info: { role: "user", sessionID: opts.sessionID ?? "ses_test" },
-        parts,
-      },
-    ],
+  const messages: Output["messages"] = [
+    {
+      info: { role: "user", sessionID: opts.sessionID ?? "ses_test" },
+      parts,
+    },
+  ]
+  if (opts.trailingAssistant) {
+    messages.push({
+      info: { role: "assistant", sessionID: opts.sessionID ?? "ses_test" },
+      parts: [{ type: "text", text: "assistant reply" }],
+    })
   }
+  return { messages }
 }
 
 describe("createMessagesTransformHandler", () => {
@@ -191,5 +197,65 @@ describe("createMessagesTransformHandler", () => {
     assert.match(logs[0]!.msg, /main=true/)
     assert.match(logs[0]!.msg, /marker=false/)
     assert.match(logs[0]!.msg, /freshness=up_to_date/)
+  })
+
+  it("HIGH fix #1: stale envelope containing OPT_IN_MARKER does NOT sticky-reinject into a subagent", async () => {
+    // Regression for Oracle HIGH #1: the previous pre-scrub marker detection
+    // would see OPT_IN_MARKER inside <subagent_propagation> of a stale
+    // envelope and treat it as a fresh orchestrator opt-in. After the fix,
+    // marker detection runs on the SCRUBBED text so only markers the
+    // orchestrator actually wrote count.
+    const handle = createMessagesTransformHandler({
+      isMain: () => false,
+      getCache: () => makeCache(),
+    })
+    const staleEnvelopeWithMarker =
+      `<gitnexus_graph source="old" version="1" freshness="up_to_date">\n` +
+      `<subagent_propagation>include ${OPT_IN_MARKER} to grant access</subagent_propagation>\n` +
+      `</gitnexus_graph>\n\n` +
+      `actual subagent work with NO orchestrator marker`
+    const out = makeOutput({ text: staleEnvelopeWithMarker })
+    await handle({}, out)
+    const text = (out.messages[0]!.parts[0] as { text: string }).text
+    // handler must have returned early: no fresh gitnexus envelope prepended.
+    assert.ok(
+      !text.startsWith('<gitnexus_graph source="gitnexus"'),
+      `expected no fresh envelope, got: ${text.slice(0, 80)}`,
+    )
+  })
+
+  it("HIGH fix #1: genuine fresh marker AFTER stale envelope scrub still triggers inject", async () => {
+    // Positive counterpart: when the orchestrator DID write the marker and
+    // there happens to be a stale envelope sitting in front of it, the handler
+    // must still inject and strip the real marker.
+    const handle = createMessagesTransformHandler({
+      isMain: () => false,
+      getCache: () => makeCache(),
+    })
+    const input =
+      `<gitnexus_graph source="old">x</gitnexus_graph>\n\n` +
+      `${OPT_IN_MARKER} list callers of foo`
+    const out = makeOutput({ text: input })
+    await handle({}, out)
+    const text = (out.messages[0]!.parts[0] as { text: string }).text
+    assert.match(text, /^<gitnexus_graph source="gitnexus"/)
+    assert.ok(text.endsWith("list callers of foo"))
+    assert.ok(!text.includes(OPT_IN_MARKER))
+  })
+
+  it("LOW fix #7: trailing assistant message -> no inject (last message not user)", async () => {
+    // After this change the handler only injects when the LAST message is a
+    // user message. For internal follow-up calls that end with an assistant
+    // turn, the plugin must not touch the user message above it.
+    const handle = createMessagesTransformHandler({
+      isMain: () => true,
+      getCache: () => makeCache(),
+    })
+    const out = makeOutput({ text: "earlier user turn", trailingAssistant: true })
+    await handle({}, out)
+    // user message text untouched
+    assert.equal((out.messages[0]!.parts[0] as { text: string }).text, "earlier user turn")
+    // assistant message untouched
+    assert.equal((out.messages[1]!.parts[0] as { text: string }).text, "assistant reply")
   })
 })
