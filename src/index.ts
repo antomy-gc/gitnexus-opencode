@@ -3,7 +3,7 @@ import { tool, type Plugin } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos, type RepoInfo } from "./discovery.js"
 import { commitsBehind } from "./staleness.js"
-import { analyzeInBackground, createToolHooks } from "./hooks.js"
+import { analyzeInBackground, createToolHooks, refreshHint } from "./hooks.js"
 
 
 function isMcpAvailable(config: ReturnType<typeof loadConfig>): boolean {
@@ -121,6 +121,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
         }
 
         const repos = discoverRepos(scanRoot)
+        refreshHint(scanRoot)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {

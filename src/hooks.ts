@@ -2,8 +2,8 @@ import { execFileSync, spawn } from "node:child_process"
 import { closeSync, existsSync, openSync } from "fs"
 import { join } from "path"
 import { gitnexusCmd, type PluginConfig } from "./config.js"
-import { hasIndex, readMeta } from "./staleness.js"
-import { discoverRepos } from "./discovery.js"
+import { hasIndex } from "./staleness.js"
+import { discoverRepos, type RepoInfo } from "./discovery.js"
 
 const GIT_MUTATION_RE = /git\s+(commit|merge|rebase|pull|cherry-pick|checkout|switch|reset)/
 
@@ -23,8 +23,14 @@ Only spawn explore agents for: conventions, anti-patterns, CI/build.`
 
 const TASK_TOOL_NAMES = new Set(["task", "Task", "call_omo_agent"])
 
-function buildSubagentHint(cwd: string): string {
-  const repos = discoverRepos(cwd)
+let cachedHint = ""
+
+export function refreshHint(scanRoot: string): void {
+  const repos = discoverRepos(scanRoot)
+  cachedHint = buildSubagentHintFromRepos(repos)
+}
+
+function buildSubagentHintFromRepos(repos: RepoInfo[]): string {
   const indexed = repos.filter((r) => r.hasIndex)
   if (indexed.length === 0) return ""
 
@@ -65,44 +71,6 @@ export function analyzeInBackground(
 }
 
 export function createToolHooks(cwd: string, config: PluginConfig, disabled: () => boolean) {
-  const headCache = new Map<string, string>()
-  const refreshingRepos = new Set<string>()
-
-  function checkAndRefreshIfStale() {
-    if (!config.autoRefreshStale) return
-    const repos = discoverRepos(cwd)
-
-    for (const repo of repos) {
-      if (!repo.hasIndex || refreshingRepos.has(repo.path)) continue
-
-      const meta = readMeta(repo.path)
-      if (!meta?.lastCommit) continue
-
-      let currentHead = headCache.get(repo.path)
-      if (!currentHead) {
-        try {
-          currentHead = execFileSync("git", ["rev-parse", "HEAD"], {
-            cwd: repo.path,
-            encoding: "utf-8",
-            timeout: 3000,
-            stdio: ["pipe", "pipe", "pipe"],
-          }).trim()
-        } catch {
-          continue
-        }
-        headCache.set(repo.path, currentHead)
-      }
-
-      if (currentHead !== meta.lastCommit) {
-        refreshingRepos.add(repo.path)
-        analyzeInBackground(repo.path, config, () => {
-          refreshingRepos.delete(repo.path)
-          headCache.delete(repo.path)
-        })
-      }
-    }
-  }
-
   return {
     onToolExecuteAfter(
       input: { tool: string; args: any },
@@ -149,11 +117,9 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
       const prompt = output.args.prompt as string | undefined
       if (!prompt || prompt.includes("[gitnexus]")) return
 
-      const hint = buildSubagentHint(cwd)
-      if (!hint) return
+      if (!cachedHint) return
 
-      checkAndRefreshIfStale()
-      output.args.prompt = prompt + hint
+      output.args.prompt = prompt + cachedHint
     },
   }
 }
