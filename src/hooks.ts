@@ -53,7 +53,23 @@ Grep is better for: literal strings, config values, code patterns.
 Skip graph if your task is pure reasoning/review without code discovery.`
 }
 
-export function analyzeInBackground(
+const inFlight = new Set<string>()
+
+export function scheduleAnalyze(
+  repoPath: string,
+  config: PluginConfig,
+  onDone?: () => void
+): boolean {
+  if (inFlight.has(repoPath)) return false
+  inFlight.add(repoPath)
+  analyzeInBackground(repoPath, config, () => {
+    inFlight.delete(repoPath)
+    onDone?.()
+  })
+  return true
+}
+
+function analyzeInBackground(
   repoPath: string,
   config: PluginConfig,
   onDone?: () => void
@@ -102,7 +118,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
 
         const repoPath = findGitRoot(cwd)
         if (repoPath && hasIndex(repoPath)) {
-          analyzeInBackground(repoPath, config)
+          scheduleAnalyze(repoPath, config, () => refreshHint(cwd))
         }
       }
     },
