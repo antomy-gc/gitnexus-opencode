@@ -83,7 +83,7 @@ Create `.opencode/gitnexus-opencode.json` (project) or `~/.config/opencode/gitne
 | Key | Default | Description |
 |-----|---------|-------------|
 | `gitnexusVersion` | `"1.5.2"` | Pin the gitnexus npm version |
-| `autoRefreshStale` | `true` | Refresh stale indexes on session start and before subagent spawns |
+| `autoRefreshStale` | `true` | Refresh stale indexes on session start |
 | `autoRefreshOnCommit` | `true` | Refresh after git commit/merge/rebase |
 
 ## Build

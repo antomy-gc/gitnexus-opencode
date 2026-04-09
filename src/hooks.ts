@@ -156,7 +156,12 @@ export function createToolHooks(deps: ToolHooksDeps) {
         const cmd = input.args?.command as string | undefined
         if (!cmd || !GIT_MUTATION_RE.test(cmd)) return
 
-        const repoPath = findGitRoot(cwd)
+        // Prefer the explicit `-C <path>` target from the command so a git
+        // mutation inside a specific child repo refreshes THAT repo, not the
+        // workspace root. Falls back to resolving the git root of `cwd` for
+        // commands that don't use `-C`.
+        const explicit = extractGitDashCPath(cmd, cwd)
+        const repoPath = explicit ?? findGitRoot(cwd)
         if (repoPath && hasIndex(repoPath)) {
           analyzeState.schedule(repoPath, config, cwd, hintState)
         }
@@ -173,6 +178,34 @@ function findGitRoot(from: string): string | null {
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
     }).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Best-effort extractor for the `git -C <path>` target. Returns null when
+ * the command does not use `-C`, when the path cannot be parsed, or when the
+ * extracted path is not itself an indexed/discoverable git repo.
+ *
+ * Handles: `git -C path commit`, `git -C /abs/path merge`, `GIT_DIR=x git -C path reset`.
+ * Relative paths are resolved against `cwd`. Quoted paths ("path with spaces")
+ * are accepted.
+ */
+export function extractGitDashCPath(cmd: string, cwd: string): string | null {
+  // Match `git -C <arg>` where <arg> is either a quoted string or a run of
+  // non-whitespace characters. Allow leading env assignments and chained
+  // command separators (&&, ;, |).
+  const m = cmd.match(/(?:^|[;&|]\s*)(?:\w+=\S+\s+)*git\s+-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/)
+  if (!m) return null
+  const raw = m[1] ?? m[2] ?? m[3]
+  if (!raw) return null
+  const abs = raw.startsWith("/") ? raw : join(cwd, raw)
+  // Only return if the target is actually a real git root. This guards
+  // against typos and paths that look valid but aren't repos.
+  try {
+    const root = findGitRoot(abs)
+    return root
   } catch {
     return null
   }
