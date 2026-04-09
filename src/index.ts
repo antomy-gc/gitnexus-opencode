@@ -6,7 +6,9 @@ import { commitsBehind } from "./staleness.js"
 import { createToolHooks, refreshHint, scheduleAnalyze } from "./hooks.js"
 
 
-function isMcpAvailable(config: ReturnType<typeof loadConfig>): boolean {
+const TOAST_DELAY_MS = 6000 // heuristic: waits past oh-my-openagent spinner animation
+
+function isGitNexusCliAvailable(config: ReturnType<typeof loadConfig>): boolean {
   const cmd = gitnexusCmd(config)
   try {
     execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
@@ -83,7 +85,9 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
 
   const tools = {
     gitnexus_analyze: tool({
-      description: "Build or refresh the GitNexus code knowledge graph for a repository. Takes 30-120s.",
+      description:
+        "Build or refresh the GitNexus code knowledge graph for a repository. " +
+        "Expensive (30-120s). Intended for the main agent; not delegated to subagents.",
       args: {
         path: tool.schema.string().optional().describe("Path to the git repository. Defaults to current directory."),
       },
@@ -113,14 +117,14 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       try {
         const sessionID = (event.properties as { info?: { id?: string } } | undefined)?.info?.id
 
-        if (!isMcpAvailable(config)) {
+        if (!isGitNexusCliAvailable(config)) {
           const cmdStr = gitnexusCmd(config).join(" ")
-          log(`CLI not available (${cmdStr} --version failed). Plugin disabled for this session.`)
+          log(`CLI not available (${cmdStr} --version failed). Plugin disabled for this session.`, "warn")
           disabled = true
           return
         }
 
-        const repos = discoverRepos(scanRoot)
+        const repos = discoverRepos(scanRoot, (msg) => log(msg, "warn"))
         refreshHint(scanRoot)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
@@ -168,7 +172,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
                 duration: 5000,
               },
             }).catch(() => {})
-          }, 6000)
+          }, TOAST_DELAY_MS)
         }
       } catch (err) {
         log(`session.created handler error: ${err instanceof Error ? err.message : String(err)}`, "error")

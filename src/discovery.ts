@@ -1,6 +1,6 @@
-import { readdirSync, existsSync, statSync } from "fs"
+import { readdirSync, statSync } from "node:fs"
 import { execFileSync } from "node:child_process"
-import { join } from "path"
+import { basename, join } from "node:path"
 import { hasIndex, isStale } from "./staleness.js"
 
 export interface RepoInfo {
@@ -28,13 +28,16 @@ function isGitRepo(dirPath: string): boolean {
  * Scan a directory for git repositories (1 level deep).
  * Returns info about each discovered repo.
  */
-export function discoverRepos(parentDir: string): RepoInfo[] {
+export function discoverRepos(
+  parentDir: string,
+  onError?: (msg: string) => void,
+): RepoInfo[] {
   const repos: RepoInfo[] = []
 
   // If parentDir itself is a git repo, return just it
   if (isGitRepo(parentDir)) {
     repos.push({
-      name: parentDir.split("/").pop() || parentDir,
+      name: basename(parentDir) || parentDir,
       path: parentDir,
       hasIndex: hasIndex(parentDir),
       isStale: isStale(parentDir),
@@ -42,12 +45,11 @@ export function discoverRepos(parentDir: string): RepoInfo[] {
     return repos
   }
 
-
-
   let entries: string[]
   try {
     entries = readdirSync(parentDir)
-  } catch {
+  } catch (err) {
+    onError?.(`Cannot read ${parentDir}: ${err instanceof Error ? err.message : String(err)}`)
     return repos
   }
 

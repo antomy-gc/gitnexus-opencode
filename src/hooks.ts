@@ -5,7 +5,8 @@ import { gitnexusCmd, type PluginConfig } from "./config.js"
 import { hasIndex } from "./staleness.js"
 import { discoverRepos, type RepoInfo } from "./discovery.js"
 
-const GIT_MUTATION_RE = /git\s+(commit|merge|rebase|pull|cherry-pick|checkout|switch|reset)/
+const GIT_MUTATION_RE =
+  /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*git(?:\s+-C\s+\S+|\s+--\S+(?:=\S+)?)*\s+(commit|merge|rebase|pull|cherry-pick|switch|reset)\b/
 
 const GRAPH_HINT = `
 [gitnexus] Code knowledge graph available. Use gitnexus_query/context/impact
