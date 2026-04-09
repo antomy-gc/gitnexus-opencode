@@ -5,16 +5,12 @@ import { gitnexusCmd, type PluginConfig } from "./config.js"
 import { hasIndex } from "./staleness.js"
 import { discoverRepos } from "./discovery.js"
 import {
-  markRefreshing,
-  markRefreshDone,
-  refreshHintCache,
-  getHintCache as getHintCacheDefault,
   scrubPromptGitnexusBlocks,
   stripOptInMarker,
   OPT_IN_MARKER,
   type HintCacheState,
+  type HintEnvelopeState,
 } from "./hint-envelope.js"
-import { isMainSession as isMainSessionDefault } from "./main-sessions.js"
 
 const GIT_MUTATION_RE =
   /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*git(?:\s+-C\s+\S+|\s+--\S+(?:=\S+)?)*\s+(commit|merge|rebase|pull|cherry-pick|switch|reset)\b/
@@ -33,46 +29,54 @@ After analyze completes, use gitnexus_query/context/cypher instead of spawning
 explore agents for codebase understanding.
 Only spawn explore agents for: conventions, anti-patterns, CI/build.`
 
-const inFlight = new Set<string>()
-
 /**
- * Schedule a background analyze for `repoPath`. The hint cache is rebuilt
- * twice:
- *   1. Before spawn — so the next messages.transform turn sees freshness="refreshing"
- *   2. In the close callback — so the cache transitions back to up_to_date
- *      (or may_be_stale if HEAD drifted again during analyze)
- *
- * `scanRoot` is the directory used for repo discovery when rebuilding the
- * cache. It is captured by closure into the spawn callbacks so the cache
- * always reflects the orchestrator's view of the workspace.
+ * Per-plugin-instance analyze state: the set of repos that currently have a
+ * background analyze in flight. Each call to createAnalyzeState() returns its
+ * own isolated state, so two plugin instances do not share dedupe.
  */
-export function scheduleAnalyze(
-  repoPath: string,
-  config: PluginConfig,
-  scanRoot: string,
-): boolean {
-  if (inFlight.has(repoPath)) return false
+export interface AnalyzeState {
+  /** Returns false if a refresh is already in flight for this repo. */
+  schedule(
+    repoPath: string,
+    config: PluginConfig,
+    scanRoot: string,
+    hintState: HintEnvelopeState,
+  ): boolean
+  /** Test helper: clear the in-flight set. */
+  reset(): void
+}
 
-  inFlight.add(repoPath)
-  markRefreshing(repoPath)
-  refreshHintCache(scanRoot)
+export function createAnalyzeState(): AnalyzeState {
+  const inFlight = new Set<string>()
 
-  const cleanup = () => {
-    inFlight.delete(repoPath)
-    markRefreshDone(repoPath)
-    refreshHintCache(scanRoot)
-  }
+  return {
+    schedule(repoPath, config, scanRoot, hintState) {
+      if (inFlight.has(repoPath)) return false
 
-  try {
-    analyzeInBackground(repoPath, config, cleanup)
-    return true
-  } catch {
-    // spawn() threw synchronously (e.g. openSync EACCES, invalid argv).
-    // Without this cleanup the repo would be stuck in the `refreshing`
-    // state and future scheduleAnalyze calls would short-circuit on
-    // inFlight.has(repoPath) forever.
-    cleanup()
-    return false
+      inFlight.add(repoPath)
+      hintState.markRefreshing(repoPath)
+      hintState.refreshHintCache(scanRoot)
+
+      const cleanup = () => {
+        inFlight.delete(repoPath)
+        hintState.markRefreshDone(repoPath)
+        hintState.refreshHintCache(scanRoot)
+      }
+
+      try {
+        analyzeInBackground(repoPath, config, cleanup)
+        return true
+      } catch {
+        // spawn() threw synchronously (e.g. openSync EACCES, invalid argv).
+        // Without this cleanup the repo would be stuck in the `refreshing`
+        // state and future schedule calls would short-circuit on inFlight.
+        cleanup()
+        return false
+      }
+    },
+    reset() {
+      inFlight.clear()
+    },
   }
 }
 
@@ -109,11 +113,24 @@ function analyzeInBackground(
   child.on("error", settleOnce)
 }
 
-export function createToolHooks(cwd: string, config: PluginConfig, disabled: () => boolean) {
+/**
+ * Dependencies needed by the tool hooks. All per-plugin-instance state is
+ * passed in explicitly; hooks.ts never touches module-level mutable state.
+ */
+export interface ToolHooksDeps {
+  cwd: string
+  config: PluginConfig
+  disabled: () => boolean
+  analyzeState: AnalyzeState
+  hintState: HintEnvelopeState
+}
+
+export function createToolHooks(deps: ToolHooksDeps) {
+  const { cwd, config, disabled, analyzeState, hintState } = deps
   return {
     onToolExecuteAfter(
       input: { tool: string; args: any },
-      output: { output: string }
+      output: { output: string },
     ) {
       if (disabled()) return
 
@@ -141,7 +158,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
 
         const repoPath = findGitRoot(cwd)
         if (repoPath && hasIndex(repoPath)) {
-          scheduleAnalyze(repoPath, config, cwd)
+          analyzeState.schedule(repoPath, config, cwd, hintState)
         }
       }
     },
@@ -163,22 +180,20 @@ function findGitRoot(from: string): string | null {
 
 /**
  * Pure factory for the experimental.chat.messages.transform hook body. Kept
- * out of index.ts so it can be unit-tested in isolation. The defaults wire
- * to the real main-session registry and hint-envelope cache; tests inject
- * fakes via the deps argument.
+ * out of index.ts so it can be unit-tested in isolation. deps.isMain and
+ * deps.getCache are required — there are no module-level defaults anymore.
  */
 export interface MessagesTransformDeps {
-  isMain?: (sessionID: string) => boolean
-  getCache?: () => HintCacheState
+  isMain: (sessionID: string) => boolean
+  getCache: () => HintCacheState
   log?: (message: string, level?: "debug" | "info" | "warn" | "error") => void
 }
 
 type TextPart = { type: "text"; text: string }
 type MessageEntry = { info: { role: string; sessionID?: string }; parts: Array<{ type: string }> }
 
-export function createMessagesTransformHandler(deps: MessagesTransformDeps = {}) {
-  const isMain = deps.isMain ?? isMainSessionDefault
-  const getCache = deps.getCache ?? getHintCacheDefault
+export function createMessagesTransformHandler(deps: MessagesTransformDeps) {
+  const { isMain, getCache } = deps
   const log = deps.log ?? (() => {})
 
   return async function handle(

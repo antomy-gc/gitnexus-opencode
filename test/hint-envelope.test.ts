@@ -1,14 +1,11 @@
 import { describe, it, beforeEach } from "node:test"
 import assert from "node:assert/strict"
 import {
-  rebuildHintCache,
-  getHintCache,
-  resetHintCache,
-  markRefreshing,
-  markRefreshDone,
+  createHintEnvelopeState,
   scrubPromptGitnexusBlocks,
   stripOptInMarker,
   OPT_IN_MARKER,
+  type HintEnvelopeState,
 } from "../src/hint-envelope.js"
 import type { RepoInfo } from "../src/discovery.js"
 
@@ -21,62 +18,65 @@ function repo(name: string, opts: { hasIndex?: boolean; isStale?: boolean; path?
   }
 }
 
-describe("rebuildHintCache + freshness", () => {
-  beforeEach(() => resetHintCache())
+describe("HintEnvelopeState: rebuildHintCache + freshness", () => {
+  let state: HintEnvelopeState
+  beforeEach(() => {
+    state = createHintEnvelopeState()
+  })
 
   it("empty repo list -> freshness=missing, empty envelope", () => {
-    rebuildHintCache([])
-    const c = getHintCache()
+    state.rebuildHintCache([])
+    const c = state.getHintCache()
     assert.equal(c.freshness, "missing")
     assert.equal(c.envelope, "")
   })
 
   it("only unindexed repos -> freshness=missing", () => {
-    rebuildHintCache([repo("a", { hasIndex: false })])
-    assert.equal(getHintCache().freshness, "missing")
+    state.rebuildHintCache([repo("a", { hasIndex: false })])
+    assert.equal(state.getHintCache().freshness, "missing")
   })
 
   it("indexed and not stale -> freshness=up_to_date", () => {
-    rebuildHintCache([repo("myproj", { hasIndex: true, isStale: false })])
-    const c = getHintCache()
+    state.rebuildHintCache([repo("myproj", { hasIndex: true, isStale: false })])
+    const c = state.getHintCache()
     assert.equal(c.freshness, "up_to_date")
     assert.match(c.envelope, /freshness="up_to_date"/)
   })
 
   it("indexed and stale -> freshness=may_be_stale", () => {
-    rebuildHintCache([repo("myproj", { hasIndex: true, isStale: true })])
-    const c = getHintCache()
+    state.rebuildHintCache([repo("myproj", { hasIndex: true, isStale: true })])
+    const c = state.getHintCache()
     assert.equal(c.freshness, "may_be_stale")
     assert.match(c.envelope, /freshness="may_be_stale"/)
   })
 
   it("markRefreshing makes the cache report freshness=refreshing on next rebuild", () => {
     const r = repo("myproj", { hasIndex: true, isStale: false, path: "/tmp/myproj" })
-    markRefreshing("/tmp/myproj")
-    rebuildHintCache([r])
-    assert.equal(getHintCache().freshness, "refreshing")
+    state.markRefreshing("/tmp/myproj")
+    state.rebuildHintCache([r])
+    assert.equal(state.getHintCache().freshness, "refreshing")
   })
 
   it("markRefreshDone clears the refreshing flag for the next rebuild", () => {
     const r = repo("myproj", { hasIndex: true, isStale: false, path: "/tmp/myproj" })
-    markRefreshing("/tmp/myproj")
-    rebuildHintCache([r])
-    assert.equal(getHintCache().freshness, "refreshing")
-    markRefreshDone("/tmp/myproj")
-    rebuildHintCache([r])
-    assert.equal(getHintCache().freshness, "up_to_date")
+    state.markRefreshing("/tmp/myproj")
+    state.rebuildHintCache([r])
+    assert.equal(state.getHintCache().freshness, "refreshing")
+    state.markRefreshDone("/tmp/myproj")
+    state.rebuildHintCache([r])
+    assert.equal(state.getHintCache().freshness, "up_to_date")
   })
 
   it("refreshing wins over stale when both flags apply", () => {
     const r = repo("myproj", { hasIndex: true, isStale: true, path: "/tmp/myproj" })
-    markRefreshing("/tmp/myproj")
-    rebuildHintCache([r])
-    assert.equal(getHintCache().freshness, "refreshing")
+    state.markRefreshing("/tmp/myproj")
+    state.rebuildHintCache([r])
+    assert.equal(state.getHintCache().freshness, "refreshing")
   })
 
   it("envelope contains required XML sections", () => {
-    rebuildHintCache([repo("myproj")])
-    const env = getHintCache().envelope
+    state.rebuildHintCache([repo("myproj")])
+    const env = state.getHintCache().envelope
     assert.match(env, /<gitnexus_graph\b/)
     assert.match(env, /<summary>/)
     assert.match(env, /<indexed_repos>/)
@@ -87,17 +87,39 @@ describe("rebuildHintCache + freshness", () => {
   })
 
   it("envelope escapes XML special chars in repo names and paths", () => {
-    rebuildHintCache([repo("weird<name>&\"'", { path: "/tmp/<weird>" })])
-    const env = getHintCache().envelope
+    state.rebuildHintCache([repo("weird<name>&\"'", { path: "/tmp/<weird>" })])
+    const env = state.getHintCache().envelope
     // raw < > & " ' must NOT appear inside the repo attribute / path text
     assert.match(env, /name="weird&lt;name&gt;&amp;&quot;&apos;"/)
     assert.match(env, />\/tmp\/&lt;weird&gt;</)
   })
 
   it("envelope mentions the OPT_IN_MARKER literal in the propagation section", () => {
-    rebuildHintCache([repo("myproj")])
-    const env = getHintCache().envelope
+    state.rebuildHintCache([repo("myproj")])
+    const env = state.getHintCache().envelope
     assert.ok(env.includes(OPT_IN_MARKER))
+  })
+
+  it("two independent HintEnvelopeState instances do not share state", () => {
+    const a = createHintEnvelopeState()
+    const b = createHintEnvelopeState()
+    a.rebuildHintCache([repo("alpha")])
+    b.rebuildHintCache([repo("bravo")])
+    assert.match(a.getHintCache().envelope, /name="alpha"/)
+    assert.match(b.getHintCache().envelope, /name="bravo"/)
+    // a's cache must not mention b's repo and vice versa
+    assert.ok(!a.getHintCache().envelope.includes("bravo"))
+    assert.ok(!b.getHintCache().envelope.includes("alpha"))
+  })
+
+  it("markRefreshing on one instance does NOT affect another instance", () => {
+    const a = createHintEnvelopeState()
+    const b = createHintEnvelopeState()
+    a.markRefreshing("/tmp/shared")
+    a.rebuildHintCache([repo("shared", { path: "/tmp/shared" })])
+    b.rebuildHintCache([repo("shared", { path: "/tmp/shared" })])
+    assert.equal(a.getHintCache().freshness, "refreshing")
+    assert.equal(b.getHintCache().freshness, "up_to_date")
   })
 })
 

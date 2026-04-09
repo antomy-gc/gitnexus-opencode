@@ -3,14 +3,13 @@ import { tool, type Plugin } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos } from "./discovery.js"
 import { buildUserToast } from "./context.js"
-import { createToolHooks, scheduleAnalyze, createMessagesTransformHandler } from "./hooks.js"
-import { refreshHintCache } from "./hint-envelope.js"
 import {
-  trackSessionCreated,
-  trackSessionDeleted,
-  isMainSession,
-} from "./main-sessions.js"
-import { getHintCache } from "./hint-envelope.js"
+  createToolHooks,
+  createMessagesTransformHandler,
+  createAnalyzeState,
+} from "./hooks.js"
+import { createHintEnvelopeState } from "./hint-envelope.js"
+import { createMainSessionRegistry } from "./main-sessions.js"
 
 
 const TOAST_DELAY_MS = 6000 // heuristic: waits past oh-my-openagent spinner animation
@@ -38,7 +37,27 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
     void client.app.log({ body: { service: "gitnexus", level, message } })
   }
 
-  const toolHooks = createToolHooks(scanRoot, config, () => disabled)
+  // Instance-scoped state. Each plugin(...) call — i.e. each workspace /
+  // worktree OpenCode loads — gets its own caches and registries so two
+  // workspaces running in the same node process cannot overwrite each
+  // other's envelopes, refresh state, or main-session sets.
+  const hintState = createHintEnvelopeState()
+  const mainSessions = createMainSessionRegistry()
+  const analyzeState = createAnalyzeState()
+
+  const toolHooks = createToolHooks({
+    cwd: scanRoot,
+    config,
+    disabled: () => disabled,
+    analyzeState,
+    hintState,
+  })
+
+  const messagesTransformHandler = createMessagesTransformHandler({
+    isMain: (sessionID) => mainSessions.isMain(sessionID),
+    getCache: () => hintState.getHintCache(),
+    log,
+  })
 
   const cmd = gitnexusCmd(config)
 
@@ -73,7 +92,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
     event: async ({ event }) => {
       if (event.type === "session.deleted") {
         const info = (event.properties as { info?: { id?: string } } | undefined)?.info
-        if (info?.id) trackSessionDeleted({ id: info.id })
+        if (info?.id) mainSessions.trackDeleted({ id: info.id })
         return
       }
 
@@ -82,7 +101,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       try {
         const info = (event.properties as { info?: { id?: string; parentID?: string } } | undefined)?.info
         const sessionID = info?.id
-        if (info?.id) trackSessionCreated({ id: info.id, parentID: info.parentID })
+        if (info?.id) mainSessions.trackCreated({ id: info.id, parentID: info.parentID })
 
         if (!isGitNexusCliAvailable(config)) {
           const cmdStr = gitnexusCmd(config).join(" ")
@@ -92,13 +111,13 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
         }
 
         const repos = discoverRepos(scanRoot, (msg) => log(msg, "warn"))
-        refreshHintCache(scanRoot)
+        hintState.refreshHintCache(scanRoot)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {
           for (const repo of repos) {
             if (repo.hasIndex && repo.isStale) {
-              scheduleAnalyze(repo.path, config, scanRoot)
+              analyzeState.schedule(repo.path, config, scanRoot, hintState)
             }
           }
         }
@@ -130,17 +149,10 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       toolHooks.onToolExecuteAfter(input, output)
     },
 
-    "experimental.chat.messages.transform": (() => {
-      const handler = createMessagesTransformHandler({
-        isMain: isMainSession,
-        getCache: getHintCache,
-        log,
-      })
-      return async (input, output) => {
-        if (disabled) return
-        await handler(input, output)
-      }
-    })(),
+    "experimental.chat.messages.transform": async (input, output) => {
+      if (disabled) return
+      await messagesTransformHandler(input, output)
+    },
   }
 }
 

@@ -3,10 +3,10 @@ import { discoverRepos, type RepoInfo } from "./discovery.js"
 /**
  * State of the cached graph hint envelope.
  *
- * - `up_to_date`  — at least one repo is indexed and not stale, no refresh in flight
- * - `refreshing`  — at least one repo is currently being analyzed in background
+ * - `up_to_date`   — at least one repo is indexed and not stale, no refresh in flight
+ * - `refreshing`   — at least one repo is currently being analyzed in background
  * - `may_be_stale` — at least one indexed repo is stale (HEAD drifted) and no refresh active
- * - `missing`     — no repo is indexed at all (envelope is empty, hook should skip injection)
+ * - `missing`      — no repo is indexed at all (envelope is empty, hook should skip injection)
  */
 export type GraphFreshness = "up_to_date" | "refreshing" | "may_be_stale" | "missing"
 
@@ -23,68 +23,78 @@ export interface HintCacheState {
  */
 export const OPT_IN_MARKER = "[[gitnexus:graph]]"
 
-const refreshing = new Set<string>()
-
-let cache: HintCacheState = {
-  envelope: "",
-  freshness: "missing",
-  updatedAt: 0,
-}
-
-export function markRefreshing(repoPath: string): void {
-  refreshing.add(repoPath)
-}
-
-export function markRefreshDone(repoPath: string): void {
-  refreshing.delete(repoPath)
-}
-
-export function getHintCache(): HintCacheState {
-  return cache
-}
-
-export function resetHintCache(): void {
-  refreshing.clear()
-  cache = { envelope: "", freshness: "missing", updatedAt: 0 }
-}
-
 /**
- * Rebuild the cached envelope from a list of repos. Pure function over the
- * repo list + the in-flight `refreshing` set. Called by:
- *   - session.created handler (initial build)
- *   - scheduleAnalyze (before + after background analyze, to flip freshness)
+ * A per-plugin-instance hint-envelope state container. Each call to
+ * createHintEnvelopeState() returns its own isolated cache and refreshing set,
+ * so two plugin instances sharing the same node process (e.g. two workspaces
+ * loaded simultaneously) cannot overwrite each other's envelopes.
  */
-export function rebuildHintCache(repos: RepoInfo[]): void {
-  const indexed = repos.filter((r) => r.hasIndex)
+export interface HintEnvelopeState {
+  /** Mark a repo as being refreshed in the background. */
+  markRefreshing(repoPath: string): void
+  /** Clear the refreshing flag for a repo. */
+  markRefreshDone(repoPath: string): void
+  /** Read the current cached envelope. */
+  getHintCache(): HintCacheState
+  /** Rebuild the cache from an explicit repo list (pure). */
+  rebuildHintCache(repos: RepoInfo[]): void
+  /** Discover repos under `scanRoot` and rebuild the cache from the result. */
+  refreshHintCache(scanRoot: string): void
+  /** Test helper: reset to initial empty state. */
+  reset(): void
+}
 
-  if (indexed.length === 0) {
-    cache = { envelope: "", freshness: "missing", updatedAt: Date.now() }
-    return
+export function createHintEnvelopeState(): HintEnvelopeState {
+  const refreshing = new Set<string>()
+  let cache: HintCacheState = {
+    envelope: "",
+    freshness: "missing",
+    updatedAt: 0,
   }
 
-  const anyRefreshing = indexed.some((r) => refreshing.has(r.path))
-  const anyStale = indexed.some((r) => r.isStale)
+  function rebuildHintCache(repos: RepoInfo[]): void {
+    const indexed = repos.filter((r) => r.hasIndex)
 
-  let freshness: GraphFreshness
-  if (anyRefreshing) freshness = "refreshing"
-  else if (anyStale) freshness = "may_be_stale"
-  else freshness = "up_to_date"
+    if (indexed.length === 0) {
+      cache = { envelope: "", freshness: "missing", updatedAt: Date.now() }
+      return
+    }
 
-  cache = {
-    envelope: buildEnvelope(indexed, freshness),
-    freshness,
-    updatedAt: Date.now(),
+    const anyRefreshing = indexed.some((r) => refreshing.has(r.path))
+    const anyStale = indexed.some((r) => r.isStale)
+
+    let freshness: GraphFreshness
+    if (anyRefreshing) freshness = "refreshing"
+    else if (anyStale) freshness = "may_be_stale"
+    else freshness = "up_to_date"
+
+    cache = {
+      envelope: buildEnvelope(indexed, freshness),
+      freshness,
+      updatedAt: Date.now(),
+    }
   }
-}
 
-/**
- * Convenience wrapper combining repo discovery + cache rebuild. Lives in this
- * module (rather than hooks.ts) so the index.ts hook handler can import it
- * without creating a circular dependency on hooks.ts.
- */
-export function refreshHintCache(scanRoot: string): void {
-  const repos = discoverRepos(scanRoot)
-  rebuildHintCache(repos)
+  return {
+    markRefreshing(repoPath) {
+      refreshing.add(repoPath)
+    },
+    markRefreshDone(repoPath) {
+      refreshing.delete(repoPath)
+    },
+    getHintCache() {
+      return cache
+    },
+    rebuildHintCache,
+    refreshHintCache(scanRoot) {
+      const repos = discoverRepos(scanRoot)
+      rebuildHintCache(repos)
+    },
+    reset() {
+      refreshing.clear()
+      cache = { envelope: "", freshness: "missing", updatedAt: 0 }
+    },
+  }
 }
 
 const LEADING_ENVELOPE_RE =
@@ -125,8 +135,6 @@ export function stripOptInMarker(text: string): string {
 
   // Step 1: if a marker sits alone on its own line (optionally surrounded by
   // horizontal whitespace), remove the entire line including its newline.
-  //   "[[gitnexus:graph]]\n..."    -> "..."
-  //   "foo\n   [[gitnexus:graph]]   \nbar" -> "foo\nbar"
   const SOLO_LINE = new RegExp(
     `(^|\r?\n)[ \t]*${escapeRegex(OPT_IN_MARKER)}[ \t]*(?=\r?\n|$)\r?\n?`,
     "g",
@@ -137,10 +145,8 @@ export function stripOptInMarker(text: string): string {
   // whitespace is left alone so interior code / markdown / structure survives.
   out = out.split(OPT_IN_MARKER).join("")
 
-  // Step 3: trim only the very first leading horizontal whitespace run and the
-  // very last trailing horizontal whitespace run, so the envelope still gets a
-  // clean join target. Interior newlines are preserved; leading newlines left
-  // by the user are also preserved.
+  // Step 3: trim only leading/trailing horizontal whitespace. Interior and
+  // vertical whitespace are preserved byte-for-byte.
   return out.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
 }
 

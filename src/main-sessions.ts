@@ -8,24 +8,35 @@
  * session info has no `parentID`, it is a main session and is added here.
  * Subagent sessions (those with `parentID` set) are deliberately ignored — the
  * orchestrator must opt them in explicitly via the OPT_IN_MARKER instead.
+ *
+ * Each call to createMainSessionRegistry() returns its own isolated Set, so
+ * two plugin instances in the same node process do not share state.
  */
 
-const mainSessions = new Set<string>()
-
-export function trackSessionCreated(info: { id: string; parentID?: string }): void {
-  if (info.parentID) return
-  mainSessions.add(info.id)
+export interface MainSessionRegistry {
+  trackCreated(info: { id: string; parentID?: string }): void
+  trackDeleted(info: { id: string }): void
+  isMain(sessionID: string): boolean
+  /** Test helper: clear every tracked session. */
+  reset(): void
 }
 
-export function trackSessionDeleted(info: { id: string }): void {
-  mainSessions.delete(info.id)
-}
+export function createMainSessionRegistry(): MainSessionRegistry {
+  const mainSessions = new Set<string>()
 
-export function isMainSession(sessionID: string): boolean {
-  return mainSessions.has(sessionID)
-}
-
-/** Test helper: clears the entire main-session set. Not for production use. */
-export function __resetMainSessions(): void {
-  mainSessions.clear()
+  return {
+    trackCreated(info) {
+      if (info.parentID) return
+      mainSessions.add(info.id)
+    },
+    trackDeleted(info) {
+      mainSessions.delete(info.id)
+    },
+    isMain(sessionID) {
+      return mainSessions.has(sessionID)
+    },
+    reset() {
+      mainSessions.clear()
+    },
+  }
 }
