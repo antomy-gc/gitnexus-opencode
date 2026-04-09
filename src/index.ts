@@ -2,8 +2,20 @@ import { execFileSync } from "node:child_process"
 import { tool, type Plugin } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos } from "./discovery.js"
-import { buildAgentContext, buildUserToast } from "./context.js"
-import { createToolHooks, refreshHint, scheduleAnalyze } from "./hooks.js"
+import { buildUserToast } from "./context.js"
+import { createToolHooks, scheduleAnalyze } from "./hooks.js"
+import {
+  refreshHintCache,
+  getHintCache,
+  scrubPromptGitnexusBlocks,
+  stripOptInMarker,
+  OPT_IN_MARKER,
+} from "./hint-envelope.js"
+import {
+  trackSessionCreated,
+  trackSessionDeleted,
+  isMainSession,
+} from "./main-sessions.js"
 
 
 const TOAST_DELAY_MS = 6000 // heuristic: waits past oh-my-openagent spinner animation
@@ -64,10 +76,18 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
     tool: tools,
 
     event: async ({ event }) => {
+      if (event.type === "session.deleted") {
+        const info = (event.properties as { info?: { id?: string } } | undefined)?.info
+        if (info?.id) trackSessionDeleted({ id: info.id })
+        return
+      }
+
       if (event.type !== "session.created") return
 
       try {
-        const sessionID = (event.properties as { info?: { id?: string } } | undefined)?.info?.id
+        const info = (event.properties as { info?: { id?: string; parentID?: string } } | undefined)?.info
+        const sessionID = info?.id
+        if (info?.id) trackSessionCreated({ id: info.id, parentID: info.parentID })
 
         if (!isGitNexusCliAvailable(config)) {
           const cmdStr = gitnexusCmd(config).join(" ")
@@ -77,39 +97,19 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
         }
 
         const repos = discoverRepos(scanRoot, (msg) => log(msg, "warn"))
-        refreshHint(scanRoot)
+        refreshHintCache(scanRoot)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {
           for (const repo of repos) {
             if (repo.hasIndex && repo.isStale) {
-              scheduleAnalyze(repo.path, config, () => refreshHint(scanRoot))
+              scheduleAnalyze(repo.path, config, () => refreshHintCache(scanRoot))
             }
           }
         }
 
         if (sessionID) {
-          const agentContext = buildAgentContext(repos)
-          if (agentContext) {
-            const promptArgs = {
-              path: { id: sessionID },
-              body: {
-                noReply: true as const,
-                parts: [{ type: "text" as const, text: agentContext }],
-              },
-              query: { directory: scanRoot },
-            }
-            try {
-              if (typeof client.session.promptAsync === "function") {
-                await client.session.promptAsync(promptArgs)
-              } else {
-                await client.session.prompt(promptArgs)
-              }
-              log(`Agent context injected for session ${sessionID}`)
-            } catch (err) {
-              log(`session.prompt failed: ${err instanceof Error ? err.message : String(err)}`, "warn")
-            }
-          }
+          log(`Session ${sessionID} ready; envelope will be injected via messages.transform when eligible`)
         }
 
         const toastMessage = buildUserToast(repos)
@@ -135,8 +135,51 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       toolHooks.onToolExecuteAfter(input, output)
     },
 
-    "tool.execute.before": async (input, output) => {
-      toolHooks.onToolExecuteBefore(input, output)
+    "experimental.chat.messages.transform": async (_input, output) => {
+      if (disabled) return
+      try {
+        const lastUser = [...output.messages].reverse().find((m) => m.info.role === "user")
+        if (!lastUser) return
+
+        const textPart = lastUser.parts.find(
+          (p) => p.type === "text" && typeof (p as { text?: unknown }).text === "string",
+        ) as { type: "text"; text: string } | undefined
+        if (!textPart) return
+
+        const sessionID = (lastUser.info as { sessionID?: string }).sessionID
+        if (!sessionID) return
+
+        const originalText = textPart.text
+        const hasMarker = originalText.includes(OPT_IN_MARKER)
+        const main = isMainSession(sessionID)
+        const eligible = main || hasMarker
+        if (!eligible) return
+
+        const cache = getHintCache()
+        if (cache.freshness === "missing") return
+
+        const scrubbed = scrubPromptGitnexusBlocks(originalText)
+        const cleaned = hasMarker ? stripOptInMarker(scrubbed) : scrubbed
+
+        textPart.text = `${cache.envelope}\n\n${cleaned}`
+
+        // Observable debug log: messages.transform mutates the transient
+        // LLM-bound messages array, NOT the persisted transcript, so this
+        // log is the only way to verify behavior without an e2e harness.
+        log(
+          "messages.transform injected: sessionID=" + sessionID +
+            " main=" + main +
+            " marker=" + hasMarker +
+            " freshness=" + cache.freshness +
+            ' textPreview="' + cleaned.slice(0, 60).replace(/\n/g, " ") + '"',
+          "info",
+        )
+      } catch (err) {
+        log(
+          `messages.transform hook error: ${err instanceof Error ? err.message : String(err)}`,
+          "warn",
+        )
+      }
     },
   }
 }
