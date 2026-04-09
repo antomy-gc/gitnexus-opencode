@@ -1,5 +1,5 @@
 import { readdirSync, existsSync, statSync } from "fs"
-import { execSync } from "child_process"
+import { execFileSync } from "node:child_process"
 import { join } from "path"
 import { hasIndex, isStale } from "./staleness.js"
 
@@ -12,7 +12,7 @@ export interface RepoInfo {
 
 function isGitRepo(dirPath: string): boolean {
   try {
-    const root = execSync("git rev-parse --show-toplevel", {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd: dirPath,
       encoding: "utf-8",
       timeout: 3000,

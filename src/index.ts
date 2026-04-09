@@ -1,4 +1,4 @@
-import { execSync } from "child_process"
+import { execFileSync } from "node:child_process"
 import { tool } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos, type RepoInfo } from "./discovery.js"
@@ -45,7 +45,7 @@ interface PluginContext {
 function isMcpAvailable(config: ReturnType<typeof loadConfig>): boolean {
   const cmd = gitnexusCmd(config)
   try {
-    execSync([...cmd, "--version"].join(" "), {
+    execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -126,8 +126,9 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
       async execute(args) {
         const repoPath = args.path || cwd
         try {
-          const result = execSync(
-            [...cmd, "analyze", repoPath].join(" "),
+          const result = execFileSync(
+            cmd[0],
+            [...cmd.slice(1), "analyze", repoPath],
             { encoding: "utf-8", timeout: 300000, cwd: repoPath }
           )
           return `Graph built successfully for ${repoPath}.\n${result}`

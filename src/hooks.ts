@@ -1,4 +1,4 @@
-import { execSync, spawn } from "child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { closeSync, existsSync, openSync } from "fs"
 import { join } from "path"
 import { gitnexusCmd, type PluginConfig } from "./config.js"
@@ -81,7 +81,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
       let currentHead = headCache.get(repo.path)
       if (!currentHead) {
         try {
-          currentHead = execSync("git rev-parse HEAD", {
+          currentHead = execFileSync("git", ["rev-parse", "HEAD"], {
             cwd: repo.path,
             encoding: "utf-8",
             timeout: 3000,
@@ -160,7 +160,7 @@ export function createToolHooks(cwd: string, config: PluginConfig, disabled: () 
 
 function findGitRoot(from: string): string | null {
   try {
-    return execSync("git rev-parse --show-toplevel", {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd: from,
       encoding: "utf-8",
       timeout: 3000,
