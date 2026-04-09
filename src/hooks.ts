@@ -8,7 +8,13 @@ import {
   markRefreshing,
   markRefreshDone,
   refreshHintCache,
+  getHintCache as getHintCacheDefault,
+  scrubPromptGitnexusBlocks,
+  stripOptInMarker,
+  OPT_IN_MARKER,
+  type HintCacheState,
 } from "./hint-envelope.js"
+import { isMainSession as isMainSessionDefault } from "./main-sessions.js"
 
 const GIT_MUTATION_RE =
   /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*git(?:\s+-C\s+\S+|\s+--\S+(?:=\S+)?)*\s+(commit|merge|rebase|pull|cherry-pick|switch|reset)\b/
@@ -123,5 +129,72 @@ function findGitRoot(from: string): string | null {
     }).trim()
   } catch {
     return null
+  }
+}
+
+/**
+ * Pure factory for the experimental.chat.messages.transform hook body. Kept
+ * out of index.ts so it can be unit-tested in isolation. The defaults wire
+ * to the real main-session registry and hint-envelope cache; tests inject
+ * fakes via the deps argument.
+ */
+export interface MessagesTransformDeps {
+  isMain?: (sessionID: string) => boolean
+  getCache?: () => HintCacheState
+  log?: (message: string, level?: "debug" | "info" | "warn" | "error") => void
+}
+
+type TextPart = { type: "text"; text: string }
+type MessageEntry = { info: { role: string; sessionID?: string }; parts: Array<{ type: string }> }
+
+export function createMessagesTransformHandler(deps: MessagesTransformDeps = {}) {
+  const isMain = deps.isMain ?? isMainSessionDefault
+  const getCache = deps.getCache ?? getHintCacheDefault
+  const log = deps.log ?? (() => {})
+
+  return async function handle(
+    _input: Record<string, never>,
+    output: { messages: MessageEntry[] },
+  ): Promise<void> {
+    try {
+      const lastUser = [...output.messages].reverse().find((m) => m.info.role === "user")
+      if (!lastUser) return
+
+      const textPart = lastUser.parts.find(
+        (p) => p.type === "text" && typeof (p as { text?: unknown }).text === "string",
+      ) as TextPart | undefined
+      if (!textPart) return
+
+      const sessionID = lastUser.info.sessionID
+      if (!sessionID) return
+
+      const originalText = textPart.text
+      const hasMarker = originalText.includes(OPT_IN_MARKER)
+      const main = isMain(sessionID)
+      const eligible = main || hasMarker
+      if (!eligible) return
+
+      const cache = getCache()
+      if (cache.freshness === "missing") return
+
+      const scrubbed = scrubPromptGitnexusBlocks(originalText)
+      const cleaned = hasMarker ? stripOptInMarker(scrubbed) : scrubbed
+
+      textPart.text = `${cache.envelope}\n\n${cleaned}`
+
+      log(
+        "messages.transform injected: sessionID=" + sessionID +
+          " main=" + main +
+          " marker=" + hasMarker +
+          " freshness=" + cache.freshness +
+          ' textPreview="' + cleaned.slice(0, 60).replace(/\n/g, " ") + '"',
+        "info",
+      )
+    } catch (err) {
+      log(
+        `messages.transform hook error: ${err instanceof Error ? err.message : String(err)}`,
+        "warn",
+      )
+    }
   }
 }

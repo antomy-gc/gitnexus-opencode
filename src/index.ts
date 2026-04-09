@@ -3,19 +3,14 @@ import { tool, type Plugin } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos } from "./discovery.js"
 import { buildUserToast } from "./context.js"
-import { createToolHooks, scheduleAnalyze } from "./hooks.js"
-import {
-  refreshHintCache,
-  getHintCache,
-  scrubPromptGitnexusBlocks,
-  stripOptInMarker,
-  OPT_IN_MARKER,
-} from "./hint-envelope.js"
+import { createToolHooks, scheduleAnalyze, createMessagesTransformHandler } from "./hooks.js"
+import { refreshHintCache } from "./hint-envelope.js"
 import {
   trackSessionCreated,
   trackSessionDeleted,
   isMainSession,
 } from "./main-sessions.js"
+import { getHintCache } from "./hint-envelope.js"
 
 
 const TOAST_DELAY_MS = 6000 // heuristic: waits past oh-my-openagent spinner animation
@@ -135,52 +130,17 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       toolHooks.onToolExecuteAfter(input, output)
     },
 
-    "experimental.chat.messages.transform": async (_input, output) => {
-      if (disabled) return
-      try {
-        const lastUser = [...output.messages].reverse().find((m) => m.info.role === "user")
-        if (!lastUser) return
-
-        const textPart = lastUser.parts.find(
-          (p) => p.type === "text" && typeof (p as { text?: unknown }).text === "string",
-        ) as { type: "text"; text: string } | undefined
-        if (!textPart) return
-
-        const sessionID = (lastUser.info as { sessionID?: string }).sessionID
-        if (!sessionID) return
-
-        const originalText = textPart.text
-        const hasMarker = originalText.includes(OPT_IN_MARKER)
-        const main = isMainSession(sessionID)
-        const eligible = main || hasMarker
-        if (!eligible) return
-
-        const cache = getHintCache()
-        if (cache.freshness === "missing") return
-
-        const scrubbed = scrubPromptGitnexusBlocks(originalText)
-        const cleaned = hasMarker ? stripOptInMarker(scrubbed) : scrubbed
-
-        textPart.text = `${cache.envelope}\n\n${cleaned}`
-
-        // Observable debug log: messages.transform mutates the transient
-        // LLM-bound messages array, NOT the persisted transcript, so this
-        // log is the only way to verify behavior without an e2e harness.
-        log(
-          "messages.transform injected: sessionID=" + sessionID +
-            " main=" + main +
-            " marker=" + hasMarker +
-            " freshness=" + cache.freshness +
-            ' textPreview="' + cleaned.slice(0, 60).replace(/\n/g, " ") + '"',
-          "info",
-        )
-      } catch (err) {
-        log(
-          `messages.transform hook error: ${err instanceof Error ? err.message : String(err)}`,
-          "warn",
-        )
+    "experimental.chat.messages.transform": (() => {
+      const handler = createMessagesTransformHandler({
+        isMain: isMainSession,
+        getCache: getHintCache,
+        log,
+      })
+      return async (input, output) => {
+        if (disabled) return
+        await handler(input, output)
       }
-    },
+    })(),
   }
 }
 
