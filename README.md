@@ -7,7 +7,7 @@ OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automati
 **On session start:**
 - Verifies GitNexus CLI is reachable (disables plugin if not)
 - Discovers git repos (current dir + subdirectories)
-- Injects graph status into agent context via `session.promptAsync`
+- Tracks the session as a main (top-level) session so the graph hint envelope is automatically prepended to its user messages by the `experimental.chat.messages.transform` hook
 - Shows toast with graph status (delayed 6s to avoid oh-my-openagent spinner overlap)
 - Background-refreshes stale indexes
 
@@ -21,14 +21,12 @@ OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automati
 | Hook | Trigger | Action |
 |------|---------|--------|
 | `tool.execute.after` on `skill` | Skill loaded | Inject graph prerequisite for `init-deep`/`init`, availability hint for others |
-| `tool.execute.after` on `bash` | Git mutation detected | Background re-index |
-| `tool.execute.before` on `task`/`call_omo_agent` | Subagent spawned | Inject GitNexus hint with MCP tools + CLI fallback |
+| `tool.execute.after` on `bash` | Git mutation detected | Background re-index (cache flips to `freshness=refreshing`, then back to `up_to_date`) |
+| `experimental.chat.messages.transform` | Every LLM call | Prepend the graph-hint envelope to the last user message of eligible sessions (main sessions automatically; subagents only if the orchestrator added the `[[gitnexus:graph]]` marker) |
 
-**Subagent hints:**
+**Graph hint envelope:**
 
-The plugin injects an informational hint into subagent prompts. Category agents (deep, quick, oracle, etc.) use GitNexus MCP tools directly. Explore/librarian agents fall back to CLI via bash (`npx gitnexus query/context/impact`).
-
-The hint is non-imperative — agents decide whether to use the graph based on their task.
+Instead of force-pushing context into every spawned subagent, the plugin maintains a single XML-wrapped envelope that describes the indexed repos, the preferred MCP / CLI tools, when to use the graph vs grep, and how to propagate access to subagents. The envelope is rebuilt on demand and is **read fresh on every LLM turn**, so agents always see the current freshness state (`up_to_date` / `refreshing` / `may_be_stale` / `missing`).
 
 ## Install
 
@@ -96,11 +94,79 @@ npm run build    # tsc + esbuild bundle
 
 Produces `dist/gitnexus-opencode.js` — single file, all internal modules bundled, `@opencode-ai/plugin` as external (resolved from OpenCode runtime).
 
+## Architecture
+
+### Envelope delivery
+
+The graph hint is delivered through OpenCode's `experimental.chat.messages.transform` hook. On every LLM call the plugin:
+
+1. Finds the last user message in the transient message array OpenCode is about to send to the model
+2. Decides eligibility:
+   - **Main session** (top-level, no `parentID`) — always eligible
+   - **Subagent session** — eligible only if the orchestrator wrote the explicit opt-in marker `[[gitnexus:graph]]` into the subagent's prompt
+3. If eligible, scrubs any leading `<gitnexus_graph>...</gitnexus_graph>` block left over from a previous turn (idempotency across compaction), strips the opt-in marker if present, and prepends the fresh envelope to the user message text
+4. Logs an `info`-level summary line so the behavior is observable from the plugin log file
+
+The envelope is prepended to the **user message**, never to the system prompt. This preserves provider-side prefix caching for the system prompt — Anthropic's cached input is roughly 5x cheaper than uncached input, and we deliberately avoid breaking that.
+
+### Auto-refresh on git mutations
+
+The `tool.execute.after` hook watches for git mutation commands (`commit`, `merge`, `rebase`, `pull`, `cherry-pick`, `switch`, `reset`). When one is detected in a `bash` call, the plugin:
+
+1. Marks the affected repo as refreshing in the hint cache and rebuilds the cache immediately, so the very next user turn sees `freshness="refreshing"`
+2. Spawns `gitnexus analyze` in the background (detached, output piped to /dev/null)
+3. On process close, marks the repo as no longer refreshing and rebuilds the cache again, so the next turn sees `freshness="up_to_date"` (or `may_be_stale` if HEAD drifted again during analyze)
+
+### For orchestrators
+
+The graph envelope is **opt-in for subagents**. The orchestrator (Sisyphus, Prometheus, OMO, your custom main agent, etc.) decides per spawn whether the subagent should see the graph by including the marker `[[gitnexus:graph]]` anywhere in the subagent's prompt text. The plugin detects the marker, prepends the envelope, and strips the marker so the subagent never sees it as literal text.
+
+**Recommended grant:**
+
+- `explore`, `deep`, `build`, `quick`, `refactor`, `sisyphus-junior`, and other coding-focused agents — pass the marker
+- Agents that touch real source files for structural questions (call chains, dependencies, blast radius) — pass the marker
+
+**Recommended skip (no marker):**
+
+- `librarian`, doc/knowledge lookup agents
+- `oracle` and other reasoning-only agents
+- Plan critics (`Momus`, `Metis`), plan builders (`Prometheus`)
+- Writing / multimodal / non-code agents
+
+Skipping the marker for these agents saves roughly 600 tokens per spawn and keeps their context focused on their actual job.
+
+**Example spawn (from a main agent):**
+
+```
+task(
+  subagent_type="explore",
+  prompt="[[gitnexus:graph]] List every caller of buildEnvelope in the repo"
+)
+```
+
+Inside the spawned subagent the prompt becomes:
+
+```xml
+<gitnexus_graph source="gitnexus" version="1" freshness="up_to_date">
+  <summary>Code knowledge graph is available. Graph is current.</summary>
+  <indexed_repos>...</indexed_repos>
+  <preferred_tools>...</preferred_tools>
+  <when_to_use>...</when_to_use>
+  <subagent_propagation>...</subagent_propagation>
+</gitnexus_graph>
+
+List every caller of buildEnvelope in the repo
+```
+
+The marker itself is gone — the subagent only sees the envelope and the cleaned prompt.
+
 ## Uninstall
 
 Remove `~/.config/opencode/plugins/gitnexus-opencode.js` and restart OpenCode.
 
 If you added GitNexus permissions to `opencode.json`, remove the `gitnexus_query`, `gitnexus_context`, `gitnexus_impact` entries from the `permission` object.
+
+If your orchestrator prompts contain literal `[[gitnexus:graph]]` markers, those become harmless inert text once the plugin is removed. You can leave them or strip them at your convenience.
 
 For full cleanup see [UNINSTALL.md](./UNINSTALL.md).
 
