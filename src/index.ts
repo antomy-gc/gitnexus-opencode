@@ -1,51 +1,23 @@
-import { execSync } from "child_process"
-import { tool } from "@opencode-ai/plugin"
+import { execFileSync } from "node:child_process"
+import { tool, type Plugin } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
-import { discoverRepos, type RepoInfo } from "./discovery.js"
-import { commitsBehind } from "./staleness.js"
-import { analyzeInBackground, createToolHooks } from "./hooks.js"
+import { discoverRepos } from "./discovery.js"
+import { buildUserToast } from "./context.js"
+import {
+  createToolHooks,
+  createMessagesTransformHandler,
+  createAnalyzeState,
+} from "./hooks.js"
+import { createHintEnvelopeState } from "./hint-envelope.js"
+import { createMainSessionRegistry } from "./main-sessions.js"
 
-interface SessionPromptBody {
-  noReply: true
-  parts: Array<{ type: "text"; text: string }>
-}
 
-interface ToastBody {
-  title?: string
-  message: string
-  variant: "info" | "success" | "error" | "warning"
-  duration?: number
-}
+const TOAST_DELAY_MS = 6000 // heuristic: waits past oh-my-openagent spinner animation
 
-interface PluginContext {
-  directory: string
-  $: (cmd: TemplateStringsArray, ...args: unknown[]) => Promise<unknown>
-  client: {
-    app: {
-      log: (opts: { service: string; level: string; message: string }) => Promise<void>
-    }
-    session: {
-      prompt: (opts: {
-        path: { id: string }
-        body: SessionPromptBody
-        query?: { directory: string }
-      }) => Promise<unknown>
-      promptAsync?: (opts: {
-        path: { id: string }
-        body: SessionPromptBody
-        query?: { directory: string }
-      }) => Promise<unknown>
-    }
-    tui: {
-      showToast: (opts: { body: ToastBody }) => Promise<unknown>
-    }
-  }
-}
-
-function isMcpAvailable(config: ReturnType<typeof loadConfig>): boolean {
+function isGitNexusCliAvailable(config: ReturnType<typeof loadConfig>): boolean {
   const cmd = gitnexusCmd(config)
   try {
-    execSync([...cmd, "--version"].join(" "), {
+    execFileSync(cmd[0], [...cmd.slice(1), "--version"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -56,78 +28,53 @@ function isMcpAvailable(config: ReturnType<typeof loadConfig>): boolean {
   }
 }
 
-function buildAgentContext(repos: RepoInfo[]): string | null {
-  if (repos.length === 0) return null
-
-  const indexed = repos.filter((r) => r.hasIndex)
-  const unindexed = repos.filter((r) => !r.hasIndex)
-  const stale = repos.filter((r) => r.hasIndex && r.isStale)
-
-  const lines: string[] = ["[gitnexus] Graph status:"]
-
-  if (indexed.length > 0) {
-    const names = indexed.map((r) => {
-      if (r.isStale) {
-        const behind = commitsBehind(r.path)
-        return `${r.name} (stale, ${behind} commits behind)`
-      }
-      return `${r.name} (up to date)`
-    })
-    lines.push(`Indexed: ${names.join(", ")}`)
-  }
-
-  if (unindexed.length > 0) {
-    const names = unindexed.map((r) => r.name).join(", ")
-    lines.push(`Not indexed: ${names}`)
-  }
-
-  if (stale.length > 0) {
-    lines.push(`Auto-refreshing stale indexes in background.`)
-  }
-
-  return lines.join("\n")
-}
-
-function buildUserToast(repos: RepoInfo[]): string | null {
-  if (repos.length === 0) return null
-
-  const unindexed = repos.filter((r) => !r.hasIndex)
-  const stale = repos.filter((r) => r.hasIndex && r.isStale)
-
-  if (stale.length === 0 && unindexed.length === 0) return null
-
-  const total = stale.length + unindexed.length
-  const parts: string[] = []
-  if (stale.length > 0) parts.push(`${stale.length} stale`)
-  if (unindexed.length > 0) parts.push(`${unindexed.length} unindexed`)
-
-  return `Knowledge graph: ${parts.join(", ")} repo${total > 1 ? "s" : ""}. Ask agent to index.`
-}
-
-const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
-  const cwd = ctx.directory
-  const config = loadConfig(cwd)
+const plugin: Plugin = async ({ directory, worktree, client }) => {
+  const scanRoot = worktree ?? directory
+  const config = loadConfig(scanRoot)
   let disabled = false
 
-  const log = (message: string) => {
-    ctx.client.app.log({ service: "gitnexus", level: "info", message })
+  const log = (message: string, level: "debug" | "info" | "warn" | "error" = "info") => {
+    void client.app.log({ body: { service: "gitnexus", level, message } })
   }
 
-  const toolHooks = createToolHooks(cwd, config, () => disabled)
+  // Instance-scoped state. Each plugin(...) call — i.e. each workspace /
+  // worktree OpenCode loads — gets its own caches and registries so two
+  // workspaces running in the same node process cannot overwrite each
+  // other's envelopes, refresh state, or main-session sets.
+  const hintState = createHintEnvelopeState()
+  const mainSessions = createMainSessionRegistry()
+  const analyzeState = createAnalyzeState()
+
+  const toolHooks = createToolHooks({
+    cwd: scanRoot,
+    config,
+    disabled: () => disabled,
+    analyzeState,
+    hintState,
+  })
+
+  const messagesTransformHandler = createMessagesTransformHandler({
+    isMain: (sessionID) => mainSessions.isMain(sessionID),
+    getCache: () => hintState.getHintCache(),
+    log,
+  })
 
   const cmd = gitnexusCmd(config)
 
   const tools = {
     gitnexus_analyze: tool({
-      description: "Build or refresh the GitNexus code knowledge graph for a repository. Takes 30-120s.",
+      description:
+        "Build or refresh the GitNexus code knowledge graph for a repository. " +
+        "Expensive (30-120s). Intended for the main agent; not delegated to subagents.",
       args: {
         path: tool.schema.string().optional().describe("Path to the git repository. Defaults to current directory."),
       },
       async execute(args) {
-        const repoPath = args.path || cwd
+        const repoPath = args.path || scanRoot
         try {
-          const result = execSync(
-            [...cmd, "analyze", repoPath].join(" "),
+          const result = execFileSync(
+            cmd[0],
+            [...cmd.slice(1), "analyze", repoPath],
             { encoding: "utf-8", timeout: 300000, cwd: repoPath }
           )
           return `Graph built successfully for ${repoPath}.\n${result}`
@@ -142,59 +89,48 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
   return {
     tool: tools,
 
-    event: async ({ event }: { event: { type: string; properties: Record<string, any> } }) => {
+    event: async ({ event }) => {
+      if (event.type === "session.deleted") {
+        const info = (event.properties as { info?: { id?: string } } | undefined)?.info
+        if (info?.id) mainSessions.trackDeleted({ id: info.id })
+        return
+      }
+
       if (event.type !== "session.created") return
 
       try {
-        const sessionID = event.properties?.info?.id as string | undefined
+        const info = (event.properties as { info?: { id?: string; parentID?: string } } | undefined)?.info
+        const sessionID = info?.id
+        if (info?.id) mainSessions.trackCreated({ id: info.id, parentID: info.parentID })
 
-        if (!isMcpAvailable(config)) {
+        if (!isGitNexusCliAvailable(config)) {
           const cmdStr = gitnexusCmd(config).join(" ")
-          log(`CLI not available (${cmdStr} --version failed). Plugin disabled for this session.`)
+          log(`CLI not available (${cmdStr} --version failed). Plugin disabled for this session.`, "warn")
           disabled = true
           return
         }
 
-        const repos = discoverRepos(cwd)
+        const repos = discoverRepos(scanRoot, (msg) => log(msg, "warn"))
+        hintState.refreshHintCache(scanRoot)
         log(`Discovered ${repos.length} repo(s): ${repos.map((r) => r.name).join(", ") || "none"}`)
 
         if (config.autoRefreshStale) {
           for (const repo of repos) {
             if (repo.hasIndex && repo.isStale) {
-              analyzeInBackground(repo.path, config)
+              analyzeState.schedule(repo.path, config, scanRoot, hintState)
             }
           }
         }
 
         if (sessionID) {
-          const agentContext = buildAgentContext(repos)
-          if (agentContext) {
-            const promptArgs = {
-              path: { id: sessionID },
-              body: {
-                noReply: true as const,
-                parts: [{ type: "text" as const, text: agentContext }],
-              },
-              query: { directory: cwd },
-            }
-            try {
-              if (typeof ctx.client.session.promptAsync === "function") {
-                await ctx.client.session.promptAsync(promptArgs)
-              } else {
-                await ctx.client.session.prompt(promptArgs)
-              }
-              log(`Agent context injected for session ${sessionID}`)
-            } catch (err) {
-              log(`session.prompt failed: ${err instanceof Error ? err.message : String(err)}`)
-            }
-          }
+          log(`Session ${sessionID} ready; envelope will be injected via messages.transform when eligible`)
         }
 
         const toastMessage = buildUserToast(repos)
         if (toastMessage) {
           // Delay toast so it appears after oh-my-openagent's 5s spinner animation
           setTimeout(() => {
-            ctx.client.tui.showToast({
+            client.tui.showToast({
               body: {
                 title: "GitNexus",
                 message: toastMessage,
@@ -202,25 +138,20 @@ const plugin = async (ctx: PluginContext): Promise<Record<string, unknown>> => {
                 duration: 5000,
               },
             }).catch(() => {})
-          }, 6000)
+          }, TOAST_DELAY_MS)
         }
       } catch (err) {
-        log(`session.created handler error: ${err instanceof Error ? err.message : String(err)}`)
+        log(`session.created handler error: ${err instanceof Error ? err.message : String(err)}`, "error")
       }
     },
 
-    "tool.execute.after": async (
-      input: { tool: string; args: Record<string, unknown> },
-      output: { output: string; args: Record<string, unknown> }
-    ) => {
+    "tool.execute.after": async (input, output) => {
       toolHooks.onToolExecuteAfter(input, output)
     },
 
-    "tool.execute.before": async (
-      input: { tool: string; args: Record<string, unknown> },
-      output: { args: Record<string, unknown> }
-    ) => {
-      toolHooks.onToolExecuteBefore(input, output)
+    "experimental.chat.messages.transform": async (input, output) => {
+      if (disabled) return
+      await messagesTransformHandler(input, output)
     },
   }
 }

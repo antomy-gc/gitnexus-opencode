@@ -162,9 +162,10 @@ On the next session start, the plugin will automatically detect missing or stale
 
 After restart, the plugin should:
 - Log a message on session start if indexes are stale or missing
-- Inject hints when skills like `init-deep` are loaded
-- Silently refresh indexes after git commits
-- Add GitNexus hints to subagent prompts
+- Inject graph prerequisite hints when the `init-deep` or `init` skill is loaded
+- Silently refresh indexes after git commits (commit, merge, rebase, etc.)
+- Automatically prepend the graph hint envelope to main-session user messages via `experimental.chat.messages.transform`
+- Prepend the envelope to subagent user messages ONLY when the orchestrator added the `[[gitnexus:graph]]` opt-in marker to the subagent prompt
 
 ## Configuration Reference
 

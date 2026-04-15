@@ -42,6 +42,10 @@ If found in the `permission` object, ask: "Remove GitNexus tool permissions from
 If yes, remove those entries. If the `permission` object becomes empty, remove the key entirely.
 If no, leave them (harmless without the MCP server).
 
+## Step 4b: Strip orchestrator opt-in markers (optional)
+
+If you ever told an orchestrator (Sisyphus, Prometheus, custom main agent, OMO recipe) to grant graph access to subagents, your saved prompts may contain literal `[[gitnexus:graph]]` markers. Without the plugin these markers become harmless inert text — the LLM will see them as a quirky tag and move on. You can leave them or strip them at your convenience; nothing breaks either way.
+
 ## Step 5: Uninstall GitNexus CLI (optional)
 
 Only offer this step if the user chose to remove the MCP server in Step 2.
