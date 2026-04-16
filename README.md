@@ -7,26 +7,45 @@ OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automati
 **On session start:**
 - Verifies GitNexus CLI is reachable (disables plugin if not)
 - Discovers git repos (current dir + subdirectories)
-- Tracks the session as a main (top-level) session so the graph hint envelope is automatically prepended to its user messages by the `experimental.chat.messages.transform` hook
+- Tracks the session as a main (top-level) session so the dynamic graph envelope is automatically prepended to its user messages
 - Shows toast with graph status (delayed 6s to avoid oh-my-openagent spinner overlap)
 - Background-refreshes stale indexes
 
+**Every chat turn:**
+- Pushes a static GitNexus rule block onto the system prompt (cache-friendly, byte-identical between turns)
+- Prepends the dynamic indexed-repo envelope to the last user message of eligible sessions
+
 **Tools:**
 
-- `gitnexus_query`, `gitnexus_context`, `gitnexus_impact` — from GitNexus MCP server. Available to all agents including subagents (requires [permission setup](#allow-gitnexus-tools-for-subagents)).
-- `gitnexus_analyze` — plugin tool for building/refreshing the graph. Intended for the main agent (re-indexing is expensive, ~30-120s). By default it is NOT delegated to subagents unless explicitly permitted in opencode.json.
+- `gitnexus_query`, `gitnexus_context`, `gitnexus_impact`, and other `gitnexus_*` tools — from the GitNexus MCP server. Available to all agents including subagents (requires [permission setup](#allow-gitnexus-tools-for-subagents)).
+- `gitnexus_analyze` — plugin tool for building/refreshing the graph. Intended for the main agent (re-indexing is expensive, 3-120s depending on repo size). By default it is NOT delegated to subagents unless explicitly permitted in opencode.json.
 
-**Tool hooks:**
+**Hooks:**
 
 | Hook | Trigger | Action |
 |------|---------|--------|
 | `tool.execute.after` on `skill` | Skill loaded | Inject graph prerequisite for `init-deep`/`init`, availability hint for others |
 | `tool.execute.after` on `bash` | Git mutation detected | Background re-index (cache flips to `freshness=refreshing`, then back to `up_to_date`) |
-| `experimental.chat.messages.transform` | Every LLM call | Prepend the graph-hint envelope to the last user message of eligible sessions (main sessions automatically; subagents only if the orchestrator added the `[[gitnexus:graph]]` marker) |
+| `experimental.chat.system.transform` | Every LLM call | Push the static GitNexus rule block onto `output.system` (idempotent; skipped if plugin disabled or already present) |
+| `experimental.chat.messages.transform` | Every LLM call | Prepend the dynamic graph envelope to the last user message of eligible sessions (main sessions automatically; subagents only if the orchestrator added the `[[gitnexus:graph]]` marker) |
 
-**Graph hint envelope:**
+## Two-layer hint architecture
 
-Instead of force-pushing context into every spawned subagent, the plugin maintains a single XML-wrapped envelope that describes the indexed repos, the preferred MCP / CLI tools, when to use the graph vs grep, and how to propagate access to subagents. The envelope is rebuilt on demand and is **read fresh on every LLM turn**, so agents always see the current freshness state (`up_to_date` / `refreshing` / `may_be_stale` / `missing`).
+The plugin contributes two distinct pieces of context per chat turn:
+
+**Layer 1 — static system addendum (in system prompt).**
+Rules that don't change between sessions: envelope contract, subagent propagation rules, tool preference, and (for main sessions) the "build a graph yourself" cost/benefit rule. Module-level constant strings, byte-identical across every turn — provider prefix caches keep matching, so the static block is amortized to roughly cached-input cost (≈5× cheaper than uncached on Anthropic).
+
+There are two variants:
+- **Full** addendum (~475 tokens) — pushed onto **main** sessions. Covers everything including subagent propagation rules and the build-graph rule.
+- **Lite** addendum (~160 tokens) — pushed onto **subagent** sessions. Covers only the envelope contract and tool preference. Omits subagent propagation (subagents rarely spawn further subagents) and the build-graph rule (`gitnexus_analyze` is intended for the main agent).
+
+The variant is chosen per chat call from the `sessionID` and the `mainSessions` registry. When `sessionID` is absent the hook conservatively defaults to the full variant.
+
+**Layer 2 — dynamic envelope (in user message).**
+Per-instance data that does change: which repos are indexed in this workspace right now, their paths, and freshness state. Read fresh on every turn. The envelope cross-references the system prompt for the rules instead of duplicating them.
+
+Splitting puts the **rules** in the highest-salience location for instruction-following (system prompt) and keeps **data** in the natural per-turn refresh location (user message). On warm-cache turns the per-turn cost is significantly lower than the previous monolithic envelope; subagents specifically pay roughly a third of what main sessions pay for the static block.
 
 ## Install
 
@@ -96,9 +115,24 @@ Produces `dist/gitnexus-opencode.js` — single file, all internal modules bundl
 
 ## Architecture
 
-### Envelope delivery
+### System addendum delivery (Layer 1)
 
-The graph hint is delivered through OpenCode's `experimental.chat.messages.transform` hook. On every LLM call the plugin:
+The static rule block is delivered through `experimental.chat.system.transform`. On every LLM call the plugin appends one of the two addendum variants to `output.system`:
+
+- **Full** for main sessions (or when `sessionID` is absent — conservative default)
+- **Lite** for sessions positively identified as subagents via the `mainSessions` registry
+
+Skipped if:
+- the plugin is disabled (CLI unreachable), or
+- any gitnexus addendum is already present in the array (idempotency, detected via the start sentinel — works across both variants).
+
+Both variants are wrapped between the same sentinels `<!-- gitnexus:system:start -->` and `<!-- gitnexus:system:end -->`. Neither variant contains per-instance interpolations, so each is byte-identical between turns and across sessions — provider prefix caches match and the cached-input price applies after the first turn.
+
+The addendum is pushed for every session where the plugin is active, including ones launched from a directory with no locally indexed repos. In that case the addendum tells the agent to call `gitnexus_list_repos` once to discover repos indexed elsewhere on the machine.
+
+### Envelope delivery (Layer 2)
+
+The dynamic envelope is delivered through OpenCode's `experimental.chat.messages.transform` hook. On every LLM call the plugin:
 
 1. Finds the last user message in the transient message array OpenCode is about to send to the model
 2. Decides eligibility:
@@ -107,7 +141,7 @@ The graph hint is delivered through OpenCode's `experimental.chat.messages.trans
 3. If eligible, scrubs any leading `<gitnexus_graph>...</gitnexus_graph>` block left over from a previous turn (idempotency across compaction), strips the opt-in marker if present, and prepends the fresh envelope to the user message text
 4. Logs an `info`-level summary line so the behavior is observable from the plugin log file
 
-The envelope is prepended to the **user message**, never to the system prompt. This preserves provider-side prefix caching for the system prompt — Anthropic's cached input is roughly 5x cheaper than uncached input, and we deliberately avoid breaking that.
+The envelope itself is small (`<summary>`, `<indexed_repos>`, and a `<rules>` cross-reference back to the system prompt). It is read fresh on every LLM turn, so agents always see the current freshness state (`up_to_date` / `refreshing` / `may_be_stale` / `missing`).
 
 ### Auto-refresh on git mutations
 
@@ -119,21 +153,21 @@ The `tool.execute.after` hook watches for git mutation commands (`commit`, `merg
 
 ### For orchestrators
 
-The graph envelope is **opt-in for subagents**. The orchestrator (Sisyphus, Prometheus, OMO, your custom main agent, etc.) decides per spawn whether the subagent should see the graph by including the marker `[[gitnexus:graph]]` anywhere in the subagent's prompt text. The plugin detects the marker, prepends the envelope, and strips the marker so the subagent never sees it as literal text.
+The static rule block in the system prompt teaches every main agent how the propagation marker works and when to use it — including which `subagent_type` values qualify, the path-based override rule, and when to build a graph yourself for deep investigation of an unindexed repo. You don't need to teach this from scratch in your orchestrator system prompt; it's already there.
 
-**Recommended grant:**
+The orchestrator (Sisyphus, Prometheus, OMO, your custom main agent, etc.) decides per spawn whether the subagent should see the dynamic envelope by including the marker `[[gitnexus:graph]]` anywhere in the subagent's prompt text. The plugin detects the marker, prepends the envelope, and strips the marker so the subagent never sees it as literal text.
 
-- `explore`, `deep`, `build`, `quick`, `refactor`, `sisyphus-junior`, and other coding-focused agents — pass the marker
-- Agents that touch real source files for structural questions (call chains, dependencies, blast radius) — pass the marker
+**Recommended grant** (parent should add the marker):
+- `explore`, `deep`, `build`, `quick`, `refactor`, `sisyphus-junior`, `general` — code-investigation agents
+- Any subagent whose prompt mentions an absolute path inside an indexed repo, regardless of `subagent_type`
 
-**Recommended skip (no marker):**
-
+**Recommended skip** (parent omits the marker):
 - `librarian`, doc/knowledge lookup agents
 - `oracle` and other reasoning-only agents
 - Plan critics (`Momus`, `Metis`), plan builders (`Prometheus`)
 - Writing / multimodal / non-code agents
 
-Skipping the marker for these agents saves roughly 600 tokens per spawn and keeps their context focused on their actual job.
+A lite variant of the rule block is pushed onto every subagent's system prompt by the same `system.transform` hook, so even a subagent spawned without the marker still knows the envelope contract (`gitnexus_list_repos` for self-discovery if the orchestrator forgot the marker) and the tool preference list. The marker controls only whether the **per-instance repo data** is delivered as a user-message envelope.
 
 **Example spawn (from a main agent):**
 
@@ -147,12 +181,12 @@ task(
 Inside the spawned subagent the prompt becomes:
 
 ```xml
-<gitnexus_graph source="gitnexus" version="1" freshness="up_to_date">
-  <summary>Code knowledge graph is available. Graph is current.</summary>
-  <indexed_repos>...</indexed_repos>
-  <preferred_tools>...</preferred_tools>
-  <when_to_use>...</when_to_use>
-  <subagent_propagation>...</subagent_propagation>
+<gitnexus_graph source="gitnexus" version="2" freshness="up_to_date">
+<summary>Code knowledge graph is available. Graph is current.</summary>
+<indexed_repos>
+<repo name="myproj" path="/Users/me/code/myproj"/>
+</indexed_repos>
+<rules>See the GitNexus section of the system prompt for tool preference and subagent propagation rules (marker [[gitnexus:graph]]).</rules>
 </gitnexus_graph>
 
 List every caller of buildEnvelope in the repo

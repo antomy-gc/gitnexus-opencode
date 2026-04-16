@@ -11,6 +11,11 @@ import {
   type HintCacheState,
   type HintEnvelopeState,
 } from "./hint-envelope.js"
+import {
+  STATIC_SYSTEM_ADDENDUM,
+  STATIC_SYSTEM_ADDENDUM_SUBAGENT,
+  systemAddendumPresent,
+} from "./system-addendum.js"
 
 const GIT_MUTATION_RE =
   /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*git(?:\s+-C\s+\S+|\s+--\S+(?:=\S+)?)*\s+(commit|merge|rebase|pull|cherry-pick|switch|reset)\b/
@@ -280,6 +285,43 @@ export function createMessagesTransformHandler(deps: MessagesTransformDeps) {
     } catch (err) {
       log(
         `messages.transform hook error: ${err instanceof Error ? err.message : String(err)}`,
+        "warn",
+      )
+    }
+  }
+}
+
+export interface SystemTransformDeps {
+  disabled: () => boolean
+  isMain: (sessionID: string) => boolean
+  log?: (message: string, level?: "debug" | "info" | "warn" | "error") => void
+}
+
+export function createSystemTransformHandler(deps: SystemTransformDeps) {
+  const { disabled, isMain } = deps
+  const log = deps.log ?? (() => {})
+
+  return async function handle(
+    input: { sessionID?: string; model?: unknown },
+    output: { system: string[] },
+  ): Promise<void> {
+    try {
+      if (disabled()) return
+      if (systemAddendumPresent(output.system)) return
+      const sessionIsKnownSubagent =
+        !!input.sessionID && !isMain(input.sessionID)
+      const addendum = sessionIsKnownSubagent
+        ? STATIC_SYSTEM_ADDENDUM_SUBAGENT
+        : STATIC_SYSTEM_ADDENDUM
+      const isMainSession = !sessionIsKnownSubagent
+      output.system.push(addendum)
+      log(
+        `system.transform pushed gitnexus addendum (variant=${isMainSession ? "full" : "subagent-lite"} sessionID=${input.sessionID ?? "<none>"})`,
+        "info",
+      )
+    } catch (err) {
+      log(
+        `system.transform hook error: ${err instanceof Error ? err.message : String(err)}`,
         "warn",
       )
     }
