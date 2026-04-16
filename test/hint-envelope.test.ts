@@ -74,27 +74,32 @@ describe("HintEnvelopeState: rebuildHintCache + freshness", () => {
     assert.equal(state.getHintCache().freshness, "refreshing")
   })
 
-  it("envelope contains required XML sections", () => {
+  it("envelope contains required XML sections (data only — rules live in system prompt)", () => {
     state.rebuildHintCache([repo("myproj")])
     const env = state.getHintCache().envelope
     assert.match(env, /<gitnexus_graph\b/)
     assert.match(env, /<summary>/)
     assert.match(env, /<indexed_repos>/)
-    assert.match(env, /<preferred_tools>/)
-    assert.match(env, /<when_to_use>/)
-    assert.match(env, /<subagent_propagation>/)
+    assert.match(env, /<rules>/)
     assert.match(env, /<\/gitnexus_graph>/)
+  })
+
+  it("envelope no longer carries the static rule sections (they moved to system prompt)", () => {
+    state.rebuildHintCache([repo("myproj")])
+    const env = state.getHintCache().envelope
+    assert.ok(!env.includes("<preferred_tools>"))
+    assert.ok(!env.includes("<when_to_use>"))
+    assert.ok(!env.includes("<subagent_propagation>"))
   })
 
   it("envelope escapes XML special chars in repo names and paths", () => {
     state.rebuildHintCache([repo("weird<name>&\"'", { path: "/tmp/<weird>" })])
     const env = state.getHintCache().envelope
-    // raw < > & " ' must NOT appear inside the repo attribute / path text
     assert.match(env, /name="weird&lt;name&gt;&amp;&quot;&apos;"/)
-    assert.match(env, />\/tmp\/&lt;weird&gt;</)
+    assert.match(env, /path="\/tmp\/&lt;weird&gt;"/)
   })
 
-  it("envelope mentions the OPT_IN_MARKER literal in the propagation section", () => {
+  it("envelope cross-references the OPT_IN_MARKER as a reminder back to system rules", () => {
     state.rebuildHintCache([repo("myproj")])
     const env = state.getHintCache().envelope
     assert.ok(env.includes(OPT_IN_MARKER))

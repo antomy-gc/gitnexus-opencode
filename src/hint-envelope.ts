@@ -177,34 +177,15 @@ function freshnessSummary(freshness: GraphFreshness): string {
 }
 
 function buildEnvelope(indexed: RepoInfo[], freshness: GraphFreshness): string {
-  const primary = indexed[0]!.name
   const repoLines = indexed
-    .map((r) => `<repo name="${escapeXml(r.name)}">${escapeXml(r.path)}</repo>`)
+    .map((r) => `<repo name="${escapeXml(r.name)}" path="${escapeXml(r.path)}"/>`)
     .join("\n")
 
-  return `<gitnexus_graph source="gitnexus" version="1" freshness="${freshness}">
+  return `<gitnexus_graph source="gitnexus" version="2" freshness="${freshness}">
 <summary>${escapeXml(freshnessSummary(freshness))}</summary>
 <indexed_repos>
 ${repoLines}
 </indexed_repos>
-<preferred_tools>
-Use these MCP tools for structural code questions (faster than grep for call chains, dependencies, blast radius):
-  gitnexus_query(query="...", repo="${escapeXml(primary)}")    - execution flows and concepts
-  gitnexus_context(name="...", repo="${escapeXml(primary)}")   - callers, callees, processes
-  gitnexus_impact(target="...", direction="upstream", repo="${escapeXml(primary)}") - blast radius
-If MCP tools are not available to the current agent, fall back to bash:
-  npx gitnexus query --repo ${escapeXml(primary)} "search terms"
-  npx gitnexus context --repo ${escapeXml(primary)} "SymbolName"
-  npx gitnexus impact --repo ${escapeXml(primary)} "SymbolName"
-</preferred_tools>
-<when_to_use>
-Prefer graph over grep for: structural questions, call chains, execution flows, blast radius, dependency analysis.
-Keep using grep/Read for: literal strings, config values, exact text patterns, file-level navigation.
-</when_to_use>
-<subagent_propagation>
-To grant a spawned subagent graph access, include the marker ${OPT_IN_MARKER} anywhere in their prompt text.
-The plugin will inject the same envelope into the subagent and strip the marker automatically.
-Do not propagate graph access to subagents that do not touch code (librarian, plan critics, documentation writers).
-</subagent_propagation>
+<rules>See the GitNexus section of the system prompt for tool preference and subagent propagation rules (marker ${OPT_IN_MARKER}).</rules>
 </gitnexus_graph>`
 }

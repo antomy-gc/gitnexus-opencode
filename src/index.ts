@@ -6,6 +6,7 @@ import { buildUserToast } from "./context.js"
 import {
   createToolHooks,
   createMessagesTransformHandler,
+  createSystemTransformHandler,
   createAnalyzeState,
 } from "./hooks.js"
 import { createHintEnvelopeState } from "./hint-envelope.js"
@@ -56,6 +57,12 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
   const messagesTransformHandler = createMessagesTransformHandler({
     isMain: (sessionID) => mainSessions.isMain(sessionID),
     getCache: () => hintState.getHintCache(),
+    log,
+  })
+
+  const systemTransformHandler = createSystemTransformHandler({
+    disabled: () => disabled,
+    isMain: (sessionID) => mainSessions.isMain(sessionID),
     log,
   })
 
@@ -152,6 +159,10 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
     "experimental.chat.messages.transform": async (input, output) => {
       if (disabled) return
       await messagesTransformHandler(input, output)
+    },
+
+    "experimental.chat.system.transform": async (input, output) => {
+      await systemTransformHandler(input, output)
     },
   }
 }
