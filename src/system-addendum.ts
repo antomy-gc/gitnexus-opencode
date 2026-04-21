@@ -59,17 +59,13 @@ literal strings, configs, file-level navigation.
 
 ## When to build a graph yourself
 
-If you expect 3+ structural queries on a repo NOT in \`<indexed_repos>\`, run
-gitnexus_analyze first. Cost: 3-120s once (repo-size dependent). Benefit:
-each query then takes milliseconds and returns typed relations
-(CALLS/EXTENDS/ACCESSES), not raw grep matches; cross-flow questions
-("trace endpoint to DB write") become one cypher call instead of multi-step
-manual stitching.
+Default: if you are going to touch an unindexed repo more than trivially,
+start with \`gitnexus_analyze\`. "Trivially" = one file, already open, edit
+you could make without understanding the rest of the repo.
 
-Triggers: user asks "how does X work" on a new repo, you are about to spawn
-a code subagent for an unindexed repo, or you expect 3+ gitnexus_query calls.
-
-Do NOT analyze for one-off lookups or single-file edits — won't pay back.
+Everything else — exploration, debugging, multi-file changes, anything that
+starts with "look into…" / "how does…" / "why…" / "add…" — warrants the
+upfront 30-120s because graph queries will outpace grep within 2 tool calls.
 ${SYSTEM_ADDENDUM_END}`
 
 /**

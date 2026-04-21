@@ -48,25 +48,32 @@ describe("STATIC_SYSTEM_ADDENDUM", () => {
     assert.match(STATIC_SYSTEM_ADDENDUM, /If absent/)
   })
 
-  it("documents the build-graph-yourself rule with a 3+ queries threshold", () => {
+  it("frames the build-graph rule as a run-by-default for unindexed repos (not a predicted-cost threshold)", () => {
     assert.match(STATIC_SYSTEM_ADDENDUM, /When to build a graph yourself/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /3\+ structural queries/)
     assert.match(STATIC_SYSTEM_ADDENDUM, /gitnexus_analyze/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /Default:/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /unindexed repo more than trivially/)
   })
 
-  it("balances the cost line with concrete benefit framing (typed relations, milliseconds, cross-flow)", () => {
-    assert.match(STATIC_SYSTEM_ADDENDUM, /3-120s/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /milliseconds/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /typed\s+relations/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /CALLS\/EXTENDS\/ACCESSES/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /cross-flow/i)
+  it("keeps the 30-120s cost line so the model can weigh the upfront wait", () => {
+    assert.match(STATIC_SYSTEM_ADDENDUM, /30-120s/)
   })
 
-  it("explicitly forbids analyze for one-off / single-file workflows (false-positive guard)", () => {
-    assert.match(STATIC_SYSTEM_ADDENDUM, /Do NOT analyze/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /one-off lookups/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /single-file edits/)
-    assert.match(STATIC_SYSTEM_ADDENDUM, /won't pay back/)
+  it("narrows the skip carve-out to single open file only (no broad 'one-off lookup' escape hatch)", () => {
+    assert.match(STATIC_SYSTEM_ADDENDUM, /"Trivially"\s*=\s*one file, already open/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /without understanding the rest of the repo/)
+  })
+
+  it("enumerates prompt-shape triggers that cover both research and implementation intents", () => {
+    assert.match(STATIC_SYSTEM_ADDENDUM, /"look into…"/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /"how does…"/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /"why…"/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /"add…"/)
+    assert.match(STATIC_SYSTEM_ADDENDUM, /exploration, debugging, multi-file changes/)
+  })
+
+  it("justifies the upfront wait with a concrete break-even bound (graph outpaces grep within 2 tool calls)", () => {
+    assert.match(STATIC_SYSTEM_ADDENDUM, /graph queries will outpace grep within 2 tool calls/)
   })
 
   it("names the GitNexus MCP tools the agent should prefer", () => {
