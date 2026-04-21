@@ -1,6 +1,6 @@
 {
   "name": "gitnexus-opencode",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "OpenCode plugin for GitNexus — automatic graph indexing, staleness detection, and subagent hints",
   "type": "module",
   "main": "dist/index.js",
