@@ -10,6 +10,7 @@ import {
   createAnalyzeState,
 } from "./hooks.js"
 import { createHintEnvelopeState } from "./hint-envelope.js"
+import { createLastInjectedRegistry } from "./last-injected.js"
 import { createMainSessionRegistry } from "./main-sessions.js"
 
 
@@ -45,6 +46,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
   const hintState = createHintEnvelopeState()
   const mainSessions = createMainSessionRegistry()
   const analyzeState = createAnalyzeState()
+  const lastInjected = createLastInjectedRegistry()
 
   const toolHooks = createToolHooks({
     cwd: scanRoot,
@@ -57,6 +59,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
   const messagesTransformHandler = createMessagesTransformHandler({
     isMain: (sessionID) => mainSessions.isMain(sessionID),
     getCache: () => hintState.getHintCache(),
+    lastInjected,
     log,
   })
 
@@ -99,7 +102,10 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
     event: async ({ event }) => {
       if (event.type === "session.deleted") {
         const info = (event.properties as { info?: { id?: string } } | undefined)?.info
-        if (info?.id) mainSessions.trackDeleted({ id: info.id })
+        if (info?.id) {
+          mainSessions.trackDeleted({ id: info.id })
+          lastInjected.clear(info.id)
+        }
         return
       }
 

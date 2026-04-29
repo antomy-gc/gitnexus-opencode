@@ -11,6 +11,7 @@ import {
   type HintCacheState,
   type HintEnvelopeState,
 } from "./hint-envelope.js"
+import type { LastInjectedRegistry } from "./last-injected.js"
 import {
   STATIC_SYSTEM_ADDENDUM,
   STATIC_SYSTEM_ADDENDUM_SUBAGENT,
@@ -224,14 +225,40 @@ export function extractGitDashCPath(cmd: string, cwd: string): string | null {
 export interface MessagesTransformDeps {
   isMain: (sessionID: string) => boolean
   getCache: () => HintCacheState
+  /**
+   * Optional per-session dedup registry. When supplied, the handler skips
+   * injection on turns whose cache.envelope is byte-identical to the last
+   * value already injected into this session. Omit to fall back to the
+   * pre-dedup behavior (inject on every eligible turn).
+   */
+  lastInjected?: LastInjectedRegistry
   log?: (message: string, level?: "debug" | "info" | "warn" | "error") => void
 }
 
 type TextPart = { type: "text"; text: string }
 type MessageEntry = { info: { role: string; sessionID?: string }; parts: Array<{ type: string }> }
 
+/**
+ * Detects whether ANY user message in the visible history still carries a
+ * <gitnexus_graph> envelope. Used by the dedup path to recognize compaction:
+ * if the conversation was rewritten and our previous envelope vanished, the
+ * memoized "last injected" value is meaningless and must be cleared.
+ */
+function historyHasEnvelope(messages: MessageEntry[]): boolean {
+  for (const m of messages) {
+    if (m.info.role !== "user") continue
+    for (const p of m.parts) {
+      const text = (p as { text?: unknown }).text
+      if (typeof text === "string" && text.includes("<gitnexus_graph")) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 export function createMessagesTransformHandler(deps: MessagesTransformDeps) {
-  const { isMain, getCache } = deps
+  const { isMain, getCache, lastInjected } = deps
   const log = deps.log ?? (() => {})
 
   return async function handle(
@@ -272,13 +299,42 @@ export function createMessagesTransformHandler(deps: MessagesTransformDeps) {
 
       const cleaned = hasMarker ? stripOptInMarker(scrubbed) : scrubbed
 
+      // Compaction guard: if no <gitnexus_graph> block survives in the full
+      // history of user messages, the conversation was compacted and the
+      // agent has lost the envelope. Drop our memoized "last injected" so
+      // the next equality check forces a fresh injection on this turn.
+      if (lastInjected && !historyHasEnvelope(output.messages)) {
+        lastInjected.clear(sessionID)
+      }
+
+      // Dedup: byte-identical envelope already in history -> skip injection.
+      // The agent already sees this exact envelope from a previous turn; the
+      // only difference would be uncached input tokens with zero new info.
+      const previous = lastInjected?.get(sessionID)
+      if (previous !== undefined && previous === cache.envelope) {
+        log(
+          "messages.transform skipped (dedup hit): sessionID=" + sessionID +
+            " main=" + main +
+            " marker=" + hasMarker +
+            " freshness=" + cache.freshness,
+          "info",
+        )
+        // Marker still has to be stripped even when we skip injection,
+        // otherwise the orchestrator's literal [[gitnexus:graph]] would
+        // leak into the subagent prompt.
+        if (hasMarker) textPart.text = cleaned
+        return
+      }
+
       textPart.text = `${cache.envelope}\n\n${cleaned}`
+      lastInjected?.set(sessionID, cache.envelope)
 
       log(
         "messages.transform injected: sessionID=" + sessionID +
           " main=" + main +
           " marker=" + hasMarker +
           " freshness=" + cache.freshness +
+          " dedup=" + (previous === undefined ? "first" : "changed") +
           ' textPreview="' + cleaned.slice(0, 60).replace(/\n/g, " ") + '"',
         "info",
       )

@@ -2,6 +2,7 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { createMessagesTransformHandler } from "../src/hooks.js"
 import { OPT_IN_MARKER, type HintCacheState } from "../src/hint-envelope.js"
+import { createLastInjectedRegistry } from "../src/last-injected.js"
 
 type Output = {
   messages: Array<{
@@ -27,22 +28,36 @@ function makeOutput(opts: {
   noText?: boolean
   noUserMessage?: boolean
   trailingAssistant?: boolean
+  priorUserText?: string
+  priorAssistantText?: string
 }): Output {
   if (opts.noUserMessage) {
     return { messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "hi" }] }] }
   }
+  const sid = opts.sessionID ?? "ses_test"
+  const messages: Output["messages"] = []
+  if (opts.priorUserText !== undefined) {
+    messages.push({
+      info: { role: "user", sessionID: sid },
+      parts: [{ type: "text", text: opts.priorUserText }],
+    })
+  }
+  if (opts.priorAssistantText !== undefined) {
+    messages.push({
+      info: { role: "assistant", sessionID: sid },
+      parts: [{ type: "text", text: opts.priorAssistantText }],
+    })
+  }
   const parts: Array<{ type: string; text?: string }> = opts.noText
     ? [{ type: "image" }]
     : [{ type: "text", text: opts.text ?? "user prompt" }]
-  const messages: Output["messages"] = [
-    {
-      info: { role: "user", sessionID: opts.sessionID ?? "ses_test" },
-      parts,
-    },
-  ]
+  messages.push({
+    info: { role: "user", sessionID: sid },
+    parts,
+  })
   if (opts.trailingAssistant) {
     messages.push({
-      info: { role: "assistant", sessionID: opts.sessionID ?? "ses_test" },
+      info: { role: "assistant", sessionID: sid },
       parts: [{ type: "text", text: "assistant reply" }],
     })
   }
@@ -241,6 +256,164 @@ describe("createMessagesTransformHandler", () => {
     assert.match(text, /^<gitnexus_graph source="gitnexus"/)
     assert.ok(text.endsWith("list callers of foo"))
     assert.ok(!text.includes(OPT_IN_MARKER))
+  })
+
+  describe("dedup via lastInjected", () => {
+    it("first turn: dedup miss -> injects and remembers envelope", async () => {
+      const reg = createLastInjectedRegistry()
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache(),
+        lastInjected: reg,
+      })
+      const out = makeOutput({ text: "first prompt", sessionID: "ses_dedup_a" })
+      await handle({}, out)
+      const text = (out.messages[out.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.match(text, /^<gitnexus_graph/)
+      assert.equal(reg.get("ses_dedup_a"), ENVELOPE)
+    })
+
+    it("second turn with identical envelope: dedup hit -> skips injection", async () => {
+      const reg = createLastInjectedRegistry()
+      reg.set("ses_dedup_b", ENVELOPE)
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache(),
+        lastInjected: reg,
+      })
+      const out = makeOutput({
+        text: "second prompt",
+        sessionID: "ses_dedup_b",
+        priorUserText: `${ENVELOPE}\n\nfirst prompt`,
+        priorAssistantText: "first reply",
+      })
+      await handle({}, out)
+      const lastText = (out.messages[out.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.equal(lastText, "second prompt", "envelope must NOT be re-injected")
+    })
+
+    it("envelope changed (freshness flip): dedup miss -> injects new and updates memo", async () => {
+      const reg = createLastInjectedRegistry()
+      const oldEnvelope = `<gitnexus_graph freshness="up_to_date">x</gitnexus_graph>`
+      const newEnvelope = `<gitnexus_graph freshness="refreshing">x</gitnexus_graph>`
+      reg.set("ses_dedup_c", oldEnvelope)
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache({ freshness: "refreshing", envelope: newEnvelope }),
+        lastInjected: reg,
+      })
+      const out = makeOutput({
+        text: "user text",
+        sessionID: "ses_dedup_c",
+        priorUserText: `${oldEnvelope}\n\nfirst prompt`,
+        priorAssistantText: "first reply",
+      })
+      await handle({}, out)
+      const lastText = (out.messages[out.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.match(lastText, /freshness="refreshing"/)
+      assert.equal(reg.get("ses_dedup_c"), newEnvelope)
+    })
+
+    it("compaction: history without any envelope -> clears memo and re-injects", async () => {
+      const reg = createLastInjectedRegistry()
+      reg.set("ses_dedup_d", ENVELOPE)
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache(),
+        lastInjected: reg,
+      })
+      const out = makeOutput({
+        text: "post-compaction prompt",
+        sessionID: "ses_dedup_d",
+        priorUserText: "compacted summary, no envelope here",
+        priorAssistantText: "compacted reply",
+      })
+      await handle({}, out)
+      const lastText = (out.messages[out.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.match(lastText, /^<gitnexus_graph/, "envelope must be re-injected after compaction")
+      assert.equal(reg.get("ses_dedup_d"), ENVELOPE)
+    })
+
+    it("dedup hit MUST still strip the OPT_IN_MARKER from a subagent prompt", async () => {
+      const reg = createLastInjectedRegistry()
+      reg.set("ses_dedup_e", ENVELOPE)
+      const handle = createMessagesTransformHandler({
+        isMain: () => false,
+        getCache: () => makeCache(),
+        lastInjected: reg,
+      })
+      const out = makeOutput({
+        text: `${OPT_IN_MARKER} list callers of bar`,
+        sessionID: "ses_dedup_e",
+        priorUserText: `${ENVELOPE}\n\nearlier subagent turn`,
+      })
+      await handle({}, out)
+      const lastText = (out.messages[out.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.equal(lastText, "list callers of bar")
+      assert.ok(!lastText.includes(OPT_IN_MARKER), "marker must be stripped even on dedup hit")
+    })
+
+    it("logs dedup=hit when skipping and dedup=first / dedup=changed when injecting", async () => {
+      const reg = createLastInjectedRegistry()
+      const logs: Array<{ msg: string; level?: string }> = []
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache(),
+        lastInjected: reg,
+        log: (msg, level) => logs.push({ msg, level }),
+      })
+
+      await handle({}, makeOutput({ text: "t1", sessionID: "ses_dedup_log" }))
+      await handle({}, makeOutput({
+        text: "t2",
+        sessionID: "ses_dedup_log",
+        priorUserText: `${ENVELOPE}\n\nt1`,
+      }))
+
+      assert.equal(logs.length, 2)
+      assert.match(logs[0]!.msg, /messages\.transform injected/)
+      assert.match(logs[0]!.msg, /dedup=first/)
+      assert.match(logs[1]!.msg, /messages\.transform skipped \(dedup hit\)/)
+    })
+
+    it("two sessions deduplicate independently", async () => {
+      const reg = createLastInjectedRegistry()
+      reg.set("ses_x", ENVELOPE)
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache(),
+        lastInjected: reg,
+      })
+      const xOut = makeOutput({
+        text: "x t2",
+        sessionID: "ses_x",
+        priorUserText: `${ENVELOPE}\n\nx t1`,
+      })
+      const yOut = makeOutput({ text: "y t1", sessionID: "ses_y" })
+      await Promise.all([handle({}, xOut), handle({}, yOut)])
+
+      const xText = (xOut.messages[xOut.messages.length - 1]!.parts[0] as { text: string }).text
+      const yText = (yOut.messages[yOut.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.equal(xText, "x t2", "session x: dedup hit")
+      assert.match(yText, /^<gitnexus_graph/, "session y: first inject")
+    })
+
+    it("backward compat: handler omitting lastInjected still injects on every call", async () => {
+      const handle = createMessagesTransformHandler({
+        isMain: () => true,
+        getCache: () => makeCache(),
+      })
+      const out1 = makeOutput({ text: "t1", sessionID: "ses_compat" })
+      const out2 = makeOutput({
+        text: "t2",
+        sessionID: "ses_compat",
+        priorUserText: `${ENVELOPE}\n\nt1`,
+      })
+      await handle({}, out1)
+      await handle({}, out2)
+      const t2 = (out2.messages[out2.messages.length - 1]!.parts[0] as { text: string }).text
+      assert.match(t2, /^<gitnexus_graph/, "no lastInjected -> still injects")
+    })
   })
 
   it("LOW fix #7: trailing assistant message -> no inject (last message not user)", async () => {
