@@ -56,6 +56,8 @@ the plugin swaps it for the envelope and strips the marker.
 Prefer for structural questions: gitnexus_query, gitnexus_context,
 gitnexus_impact, gitnexus_cypher, gitnexus_list_repos. Keep Grep/Read for
 literal strings, configs, file-level navigation.
+For open-ended exploration or multi-flow tracing, delegate to a subagent
+with \`${OPT_IN_MARKER}\` instead of stacking inline calls.
 
 ## When to build a graph yourself
 
