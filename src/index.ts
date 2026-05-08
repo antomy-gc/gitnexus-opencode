@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { tool, type Plugin } from "@opencode-ai/plugin"
+import { tool, type Plugin, type PluginInput } from "@opencode-ai/plugin"
 import { loadConfig, gitnexusCmd } from "./config.js"
 import { discoverRepos } from "./discovery.js"
 import { buildUserToast } from "./context.js"
@@ -11,7 +11,7 @@ import {
 } from "./hooks.js"
 import { createHintEnvelopeState } from "./hint-envelope.js"
 import { createLastInjectedRegistry } from "./last-injected.js"
-import { createMainSessionRegistry } from "./main-sessions.js"
+import { createSessionRegistry, type SessionRegistry } from "./sessions.js"
 
 
 const TOAST_DELAY_MS = 6000 // heuristic: waits past oh-my-openagent spinner animation
@@ -30,6 +30,32 @@ function isGitNexusCliAvailable(config: ReturnType<typeof loadConfig>): boolean 
   }
 }
 
+async function hydrateSubagentRegistry(
+  client: PluginInput["client"],
+  registry: SessionRegistry,
+  log: (message: string, level?: "debug" | "info" | "warn" | "error") => void,
+): Promise<void> {
+  try {
+    const result = await client.session.list()
+    const sessions = (result as { data?: Array<{ id?: string; parentID?: string }> })?.data ?? []
+    let subagentCount = 0
+    for (const s of sessions) {
+      if (s?.id && s?.parentID) {
+        registry.trackCreated({ id: s.id, parentID: s.parentID })
+        subagentCount++
+      }
+    }
+    log(
+      `Hydrated subagent registry from session.list(): ${subagentCount} subagent(s) of ${sessions.length} session(s)`,
+    )
+  } catch (err) {
+    log(
+      `session.list() failed during hydration: ${err instanceof Error ? err.message : String(err)}. Unknown sessions will default to main (safe).`,
+      "warn",
+    )
+  }
+}
+
 const plugin: Plugin = async ({ directory, worktree, client }) => {
   const scanRoot = worktree ?? directory
   const config = loadConfig(scanRoot)
@@ -42,11 +68,17 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
   // Instance-scoped state. Each plugin(...) call — i.e. each workspace /
   // worktree OpenCode loads — gets its own caches and registries so two
   // workspaces running in the same node process cannot overwrite each
-  // other's envelopes, refresh state, or main-session sets.
+  // other's envelopes, refresh state, or session registries.
   const hintState = createHintEnvelopeState()
-  const mainSessions = createMainSessionRegistry()
+  const sessions = createSessionRegistry()
   const analyzeState = createAnalyzeState()
   const lastInjected = createLastInjectedRegistry()
+
+  // Hydrate the subagent registry from existing sessions so plugin reloads
+  // and session compactions don't misclassify long-lived subagents as main.
+  // Fire-and-forget: a turn that races this hydration sees the unknown
+  // session default to main, which is the safe (harmless) failure mode.
+  void hydrateSubagentRegistry(client, sessions, log)
 
   const toolHooks = createToolHooks({
     cwd: scanRoot,
@@ -57,7 +89,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
   })
 
   const messagesTransformHandler = createMessagesTransformHandler({
-    isMain: (sessionID) => mainSessions.isMain(sessionID),
+    isMain: (sessionID) => sessions.isMain(sessionID),
     getCache: () => hintState.getHintCache(),
     lastInjected,
     log,
@@ -65,7 +97,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
 
   const systemTransformHandler = createSystemTransformHandler({
     disabled: () => disabled,
-    isMain: (sessionID) => mainSessions.isMain(sessionID),
+    isMain: (sessionID) => sessions.isMain(sessionID),
     log,
   })
 
@@ -103,7 +135,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       if (event.type === "session.deleted") {
         const info = (event.properties as { info?: { id?: string } } | undefined)?.info
         if (info?.id) {
-          mainSessions.trackDeleted({ id: info.id })
+          sessions.trackDeleted({ id: info.id })
           lastInjected.clear(info.id)
         }
         return
@@ -114,7 +146,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
       try {
         const info = (event.properties as { info?: { id?: string; parentID?: string } } | undefined)?.info
         const sessionID = info?.id
-        if (info?.id) mainSessions.trackCreated({ id: info.id, parentID: info.parentID })
+        if (info?.id) sessions.trackCreated({ id: info.id, parentID: info.parentID })
 
         if (!isGitNexusCliAvailable(config)) {
           const cmdStr = gitnexusCmd(config).join(" ")

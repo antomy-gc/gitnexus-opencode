@@ -15,7 +15,7 @@
  *
  * Each call to createLastInjectedRegistry() returns its own isolated Map so
  * two plugin instances loaded in the same node process do not share state,
- * matching the per-instance pattern used by hint-envelope and main-sessions.
+ * matching the per-instance pattern used by hint-envelope and sessions.
  */
 
 export interface LastInjectedRegistry {
