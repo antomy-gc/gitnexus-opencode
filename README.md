@@ -7,13 +7,15 @@ OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automati
 **On session start:**
 - Verifies GitNexus CLI is reachable (disables plugin if not)
 - Discovers git repos (current dir + subdirectories)
-- Tracks the session as a main (top-level) session so the dynamic graph envelope is automatically prepended to its user messages
+- Classifies the session: subagents are tracked by `parentID`; everything else defaults to main and gets the dynamic graph envelope on its user messages
+- Hydrates the subagent registry from `client.session.list()` so long-lived subagents survive plugin reloads
 - Shows toast with graph status (delayed 6s to avoid oh-my-openagent spinner overlap)
 - Background-refreshes stale indexes
 
 **Every chat turn:**
 - Pushes a static GitNexus rule block onto the system prompt (cache-friendly, byte-identical between turns)
 - Prepends the dynamic indexed-repo envelope to the last user message of eligible sessions
+- Deduplicates the envelope per session: if the next-turn envelope is byte-identical to what was last injected into this session, injection is skipped — the agent already carries it in conversation history
 
 **Tools:**
 
@@ -27,25 +29,27 @@ OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automati
 | `tool.execute.after` on `skill` | Skill loaded | Inject graph prerequisite for `init-deep`/`init`, availability hint for others |
 | `tool.execute.after` on `bash` | Git mutation detected | Background re-index (cache flips to `freshness=refreshing`, then back to `up_to_date`) |
 | `experimental.chat.system.transform` | Every LLM call | Push the static GitNexus rule block onto `output.system` (idempotent; skipped if plugin disabled or already present) |
-| `experimental.chat.messages.transform` | Every LLM call | Prepend the dynamic graph envelope to the last user message of eligible sessions (main sessions automatically; subagents only if the orchestrator added the `[[gitnexus:graph]]` marker) |
+| `experimental.chat.messages.transform` | Every LLM call | Prepend the dynamic graph envelope to the last user message of eligible sessions (main sessions automatically; subagents only if the orchestrator added the `[[gitnexus:graph]]` marker). Skips injection when the envelope is byte-identical to the last one injected into this session (per-session dedup). |
 
 ## Two-layer hint architecture
 
 The plugin contributes two distinct pieces of context per chat turn:
 
 **Layer 1 — static system addendum (in system prompt).**
-Rules that don't change between sessions: envelope contract, subagent propagation rules, tool preference, and (for main sessions) the "build a graph yourself" cost/benefit rule. Module-level constant strings, byte-identical across every turn — provider prefix caches keep matching, so the static block is amortized to roughly cached-input cost (≈5× cheaper than uncached on Anthropic).
+Rules that don't change between sessions: envelope contract, subagent propagation rules, tool preference, a delegate-to-subagent nudge for open-ended graph work, and (for main sessions) the "build a graph yourself" cost/benefit rule. Module-level constant strings, byte-identical across every turn — provider prefix caches keep matching, so the static block is amortized to roughly cached-input cost (≈5× cheaper than uncached on Anthropic).
 
 There are two variants:
-- **Full** addendum (~475 tokens) — pushed onto **main** sessions. Covers everything including subagent propagation rules and the build-graph rule.
+- **Full** addendum (~510 tokens) — pushed onto **main** sessions. Covers everything: envelope contract, subagent propagation rules, delegate-to-subagent nudge, and the build-graph rule.
 - **Lite** addendum (~160 tokens) — pushed onto **subagent** sessions. Covers only the envelope contract and tool preference. Omits subagent propagation (subagents rarely spawn further subagents) and the build-graph rule (`gitnexus_analyze` is intended for the main agent).
 
-The variant is chosen per chat call from the `sessionID` and the `mainSessions` registry. When `sessionID` is absent the hook conservatively defaults to the full variant.
+The variant is chosen per chat call from the `sessionID` and the `SessionRegistry`. The registry tracks **subagents** positively (by `parentID`) and defaults unknown sessions to **main** — the safer failure mode, since the dynamic envelope is independently gated by the `[[gitnexus:graph]]` marker check.
 
 **Layer 2 — dynamic envelope (in user message).**
 Per-instance data that does change: which repos are indexed in this workspace right now, their paths, and freshness state. Read fresh on every turn. The envelope cross-references the system prompt for the rules instead of duplicating them.
 
-Splitting puts the **rules** in the highest-salience location for instruction-following (system prompt) and keeps **data** in the natural per-turn refresh location (user message). On warm-cache turns the per-turn cost is significantly lower than the previous monolithic envelope; subagents specifically pay roughly a third of what main sessions pay for the static block.
+The envelope is **deduplicated per session**: a `LastInjectedRegistry` memoizes the last envelope injected into each session. If the next-turn envelope is byte-identical (no freshness flips, no repos added/removed), the hook skips injection — the agent already has it in conversation history, and re-injecting would only burn uncached input tokens. The memo clears on session deletion or when `<gitnexus_graph>` no longer appears in visible history (compaction guard), so the next turn force-re-injects.
+
+Splitting puts the **rules** in the highest-salience location for instruction-following (system prompt) and keeps **data** in the natural per-turn refresh location (user message). On warm-cache turns the per-turn cost is significantly lower than the previous monolithic envelope; subagents specifically pay roughly a third of what main sessions pay for the static block. On a stable repo state, a long session pays the envelope cost exactly once instead of N times.
 
 ## Install
 
@@ -61,7 +65,7 @@ Ensure GitNexus MCP is configured in `~/.config/opencode/config.json`:
   "mcp": {
     "gitnexus": {
       "type": "local",
-      "command": ["npx", "-y", "gitnexus@1.5.2", "mcp"]
+      "command": ["npx", "-y", "gitnexus@1.6.5", "mcp"]
     }
   }
 }
@@ -93,7 +97,7 @@ Create `.opencode/gitnexus-opencode.json` (project) or `~/.config/opencode/gitne
 
 ```json
 {
-  "gitnexusVersion": "1.5.2",
+  "gitnexusVersion": "1.6.5",
   "autoRefreshStale": true,
   "autoRefreshOnCommit": true
 }
@@ -101,7 +105,7 @@ Create `.opencode/gitnexus-opencode.json` (project) or `~/.config/opencode/gitne
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `gitnexusVersion` | `"1.5.2"` | Pin the gitnexus npm version |
+| `gitnexusVersion` | `"1.6.5"` | Pin the gitnexus npm version |
 | `autoRefreshStale` | `true` | Refresh stale indexes on session start |
 | `autoRefreshOnCommit` | `true` | Refresh after git commit/merge/rebase |
 
@@ -119,8 +123,8 @@ Produces `dist/gitnexus-opencode.js` — single file, all internal modules bundl
 
 The static rule block is delivered through `experimental.chat.system.transform`. On every LLM call the plugin appends one of the two addendum variants to `output.system`:
 
-- **Full** for main sessions (or when `sessionID` is absent — conservative default)
-- **Lite** for sessions positively identified as subagents via the `mainSessions` registry
+- **Full** for main sessions (and for unknown sessions — conservative default, see below)
+- **Lite** for sessions positively identified as subagents via the `SessionRegistry`
 
 Skipped if:
 - the plugin is disabled (CLI unreachable), or
@@ -128,7 +132,15 @@ Skipped if:
 
 Both variants are wrapped between the same sentinels `<!-- gitnexus:system:start -->` and `<!-- gitnexus:system:end -->`. Neither variant contains per-instance interpolations, so each is byte-identical between turns and across sessions — provider prefix caches match and the cached-input price applies after the first turn.
 
+The full addendum also nudges the main agent to **delegate open-ended exploration or multi-flow tracing to a subagent** with the `[[gitnexus:graph]]` marker, instead of stacking inline `gitnexus_*` calls. This keeps the main agent's context clean on multi-step graph workflows where each tool response (~2-10KB) would otherwise accumulate in history.
+
 The addendum is pushed for every session where the plugin is active, including ones launched from a directory with no locally indexed repos. In that case the addendum tells the agent to call `gitnexus_list_repos` once to discover repos indexed elsewhere on the machine.
+
+#### Session classification (subagent vs. main)
+
+The `SessionRegistry` tracks **subagent** sessions positively (by presence of `parentID` on `session.created`) and defaults unknown sessions to **main**. This is the safe failure mode: misclassifying an unknown session as main only adds harmless extra text to its system prompt, while the user-message envelope is still gated by the `[[gitnexus:graph]]` marker check in `messages.transform` — so an unmarked subagent does NOT receive the envelope just because it was misclassified.
+
+On plugin init the registry is **hydrated** from `client.session.list()`: every existing session with a `parentID` is re-registered as a subagent. This way long-lived subagents survive plugin reloads and session compaction without being silently re-classified as main and seeing the wrong addendum variant.
 
 ### Envelope delivery (Layer 2)
 
@@ -138,10 +150,13 @@ The dynamic envelope is delivered through OpenCode's `experimental.chat.messages
 2. Decides eligibility:
    - **Main session** (top-level, no `parentID`) — always eligible
    - **Subagent session** — eligible only if the orchestrator wrote the explicit opt-in marker `[[gitnexus:graph]]` into the subagent's prompt
-3. If eligible, scrubs any leading `<gitnexus_graph>...</gitnexus_graph>` block left over from a previous turn (idempotency across compaction), strips the opt-in marker if present, and prepends the fresh envelope to the user message text
-4. Logs an `info`-level summary line so the behavior is observable from the plugin log file
+3. **Per-session dedup check**: if the next-turn envelope is byte-identical to the one last injected into this session, skip injection. Strip the opt-in marker if present (otherwise it would leak into subagent prompts as literal text) and exit. The agent already has the envelope in conversation history.
+4. If the envelope is new (or the registry was cleared by compaction), scrubs any leading `<gitnexus_graph>...</gitnexus_graph>` block left over from a previous turn (idempotency), strips the opt-in marker, and prepends the fresh envelope to the user message text. Records the injection in the `LastInjectedRegistry`.
+5. Logs an `info`-level summary line so the behavior is observable from the plugin log file
 
 The envelope itself is small (`<summary>`, `<indexed_repos>`, and a `<rules>` cross-reference back to the system prompt). It is read fresh on every LLM turn, so agents always see the current freshness state (`up_to_date` / `refreshing` / `may_be_stale` / `missing`).
+
+**Compaction guard.** The handler clears the per-session memo when no `<gitnexus_graph>` block survives in the visible message history. After OpenCode compacts a session, the next turn force-re-injects so the agent never operates without the envelope when it expects one.
 
 ### Auto-refresh on git mutations
 
