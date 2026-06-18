@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs"
+import { readdirSync, realpathSync, statSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { basename, join } from "node:path"
 import { hasIndex, isStale } from "./staleness.js"
@@ -18,7 +18,7 @@ function isGitRepo(dirPath: string): boolean {
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
     }).trim()
-    return root === dirPath
+    return root === realpathSync(dirPath)
   } catch {
     return false
   }
