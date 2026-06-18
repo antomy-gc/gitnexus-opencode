@@ -29,7 +29,7 @@ Use grep only for: comments, config files, runtime behavior.`
 const INIT_PREREQUISITE = `
 [gitnexus:prerequisite]
 Before starting exploration, run the gitnexus_analyze tool to build the code knowledge graph.
-This takes 30-120s (0 tokens) but provides all functional areas, execution flows,
+This costs 0 tokens and provides all functional areas, execution flows,
 symbol density, and callers/callees — saving ~80% of exploration tokens.
 After analyze completes, use gitnexus_query/context/cypher instead of spawning
 explore agents for codebase understanding.

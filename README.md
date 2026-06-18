@@ -20,7 +20,7 @@ OpenCode plugin for [GitNexus](https://github.com/nicepkg/gitnexus) — automati
 **Tools:**
 
 - `gitnexus_query`, `gitnexus_context`, `gitnexus_impact`, and other `gitnexus_*` tools — from the GitNexus MCP server. Available to all agents including subagents (requires [permission setup](#allow-gitnexus-tools-for-subagents)).
-- `gitnexus_analyze` — plugin tool for building/refreshing the graph. Intended for the main agent (re-indexing is expensive, 3-120s depending on repo size). By default it is NOT delegated to subagents unless explicitly permitted in opencode.json.
+- `gitnexus_analyze` — plugin tool for building/refreshing the graph. Intended for the main agent. By default it is NOT delegated to subagents unless explicitly permitted in opencode.json.
 
 **Hooks:**
 

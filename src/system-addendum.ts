@@ -66,8 +66,8 @@ start with \`gitnexus_analyze\`. "Trivially" = one file, already open, edit
 you could make without understanding the rest of the repo.
 
 Everything else — exploration, debugging, multi-file changes, anything that
-starts with "look into…" / "how does…" / "why…" / "add…" — warrants the
-upfront 30-120s because graph queries will outpace grep within 2 tool calls.
+starts with "look into…" / "how does…" / "why…" / "add…" — warrants building
+the graph first because graph queries will outpace grep within 2 tool calls.
 ${SYSTEM_ADDENDUM_END}`
 
 /**
@@ -80,7 +80,7 @@ ${SYSTEM_ADDENDUM_END}`
  *   - Subagent propagation rules — subagents rarely spawn further subagents.
  *   - "When to build a graph yourself" — gitnexus_analyze is intended for
  *     the main agent only (see its tool description); a short-lived
- *     subagent should not initiate a 3-120s background indexing job.
+ *     subagent should not initiate a background indexing job.
  *
  * This save roughly 60-65% of the addendum size for every subagent system
  * prompt while keeping the subagent functionally complete for its own work.

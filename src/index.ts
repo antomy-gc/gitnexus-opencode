@@ -107,7 +107,7 @@ const plugin: Plugin = async ({ directory, worktree, client }) => {
     gitnexus_analyze: tool({
       description:
         "Build or refresh the GitNexus code knowledge graph for a repository. " +
-        "Expensive (30-120s). Intended for the main agent; not delegated to subagents.",
+        "Intended for the main agent; not delegated to subagents.",
       args: {
         path: tool.schema.string().optional().describe("Path to the git repository. Defaults to current directory."),
       },

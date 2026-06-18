@@ -55,8 +55,9 @@ describe("STATIC_SYSTEM_ADDENDUM", () => {
     assert.match(STATIC_SYSTEM_ADDENDUM, /unindexed repo more than trivially/)
   })
 
-  it("keeps the 30-120s cost line so the model can weigh the upfront wait", () => {
-    assert.match(STATIC_SYSTEM_ADDENDUM, /30-120s/)
+  it("does not put a predicted time/cost on building the graph (it would deter the agent)", () => {
+    assert.doesNotMatch(STATIC_SYSTEM_ADDENDUM, /30-120s|3-120s/)
+    assert.doesNotMatch(STATIC_SYSTEM_ADDENDUM, /\bexpensive\b/i)
   })
 
   it("narrows the skip carve-out to single open file only (no broad 'one-off lookup' escape hatch)", () => {
